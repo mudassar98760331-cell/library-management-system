@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+
+# Uploads (QR images, payment screenshots)
+uploads/
+
+# Logs
+*.log
+stdout.log
+stderr.log
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Reference / private images
+reference-images/

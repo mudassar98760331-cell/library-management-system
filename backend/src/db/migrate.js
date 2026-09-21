@@ -1,0 +1,421 @@
+import dotenv from "dotenv";
+import bcrypt from "bcryptjs";
+import pool from "../config/db.js";
+
+dotenv.config();
+
+const dropTables = [
+  "DROP TABLE IF EXISTS lost_found",
+  "DROP TABLE IF EXISTS notifications",
+  "DROP TABLE IF EXISTS bookings",
+  "DROP TABLE IF EXISTS payments",
+  "DROP TABLE IF EXISTS memberships",
+  "DROP TABLE IF EXISTS fee_plans",
+  "DROP TABLE IF EXISTS coupons",
+  "DROP TABLE IF EXISTS seat_layouts",
+  "DROP TABLE IF EXISTS seats",
+  "DROP TABLE IF EXISTS rooms",
+  "DROP TABLE IF EXISTS payment_settings",
+  "DROP TABLE IF EXISTS payment_screenshots",
+  "DROP TABLE IF EXISTS admin_logs",
+  "DROP TABLE IF EXISTS settings",
+  "DROP TABLE IF EXISTS membership_plans",
+  "DROP TABLE IF EXISTS users CASCADE",
+];
+
+const createTables = [
+  `CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    phone VARCHAR(15) DEFAULT '',
+    role VARCHAR(10) DEFAULT 'student' CHECK (role IN ('student', 'admin')),
+    avatar VARCHAR(255) DEFAULT '',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE rooms (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    capacity INTEGER NOT NULL,
+    description TEXT DEFAULT '',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE seats (
+    id SERIAL PRIMARY KEY,
+    seat_number VARCHAR(10) NOT NULL,
+    room_id INTEGER NOT NULL REFERENCES rooms(id),
+    status VARCHAR(20) DEFAULT 'available' CHECK (status IN ('available', 'booked', 'reserved', 'disabled')),
+    UNIQUE(seat_number)
+  )`,
+
+  `CREATE TABLE seat_layouts (
+    id SERIAL PRIMARY KEY,
+    seat_id INTEGER NOT NULL REFERENCES seats(id) ON DELETE CASCADE,
+    position VARCHAR(20) NOT NULL CHECK (position IN ('top', 'left', 'right', 'bottom', 'middle')),
+    sort_order INTEGER DEFAULT 0,
+    UNIQUE(seat_id)
+  )`,
+
+  `CREATE TABLE fee_plans (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    start_minute INTEGER NOT NULL,
+    end_minute INTEGER NOT NULL,
+    is_24_hour BOOLEAN DEFAULT false,
+    price INTEGER NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE memberships (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    fee_plan_id INTEGER REFERENCES fee_plans(id),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('active', 'expired', 'pending', 'cancelled')),
+    start_date DATE DEFAULT CURRENT_DATE,
+    end_date DATE,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE bookings (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    seat_id INTEGER REFERENCES seats(id),
+    fee_plan_id INTEGER REFERENCES fee_plans(id),
+    booking_start DATE,
+    booking_end DATE,
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed')),
+    booking_source VARCHAR(20) DEFAULT 'online' CHECK (booking_source IN ('online', 'offline')),
+    booked_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE payments (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    membership_id INTEGER REFERENCES memberships(id),
+    amount INTEGER NOT NULL,
+    method VARCHAR(50) DEFAULT 'upi',
+    payment_type VARCHAR(20) DEFAULT 'online' CHECK (payment_type IN ('online', 'offline_cash', 'offline_upi', 'offline_other')),
+    utr_number VARCHAR(100) DEFAULT '',
+    screenshot_url VARCHAR(255) DEFAULT '',
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('completed', 'pending', 'rejected')),
+    admin_note TEXT DEFAULT '',
+    payment_date DATE,
+    receipt_number VARCHAR(100),
+    admin_id INTEGER REFERENCES users(id),
+    payment_mode VARCHAR(20) DEFAULT '' CHECK (payment_mode IN ('', 'cash', 'upi', 'other')),
+    amount_paid INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    title VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE lost_found (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    item_name VARCHAR(200) NOT NULL,
+    description TEXT DEFAULT '',
+    location VARCHAR(200) DEFAULT '',
+    status VARCHAR(20) DEFAULT 'lost' CHECK (status IN ('lost', 'found', 'returned')),
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE payment_settings (
+    id SERIAL PRIMARY KEY,
+    setting_key VARCHAR(50) UNIQUE NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`,
+];
+
+const seedFeePlans = `
+INSERT INTO fee_plans (name, start_minute, end_minute, is_24_hour, price) VALUES
+  ('24 Hours', 0, 1440, true, 1500),
+  ('7:00 AM to 11:00 PM', 420, 1380, false, 1200),
+  ('5:00 AM to 10:00 AM', 300, 600, false, 500),
+  ('10:00 AM to 6:30 PM', 600, 1110, false, 1000),
+  ('7:00 PM to 12:00 AM', 1140, 1440, false, 500);
+`;
+
+const seedRooms = `
+INSERT INTO rooms (name, capacity, description) VALUES
+  ('Room 1', 20, 'Main study room with 20 seats'),
+  ('Room 2', 19, 'Study room with 19 seats'),
+  ('Room 3', 4, 'Small group study room with 4 seats');
+`;
+
+const seedRoom1Seats = `
+INSERT INTO seats (seat_number, room_id, status) VALUES
+  ('S-10', 1, 'available'), ('S-18', 1, 'available'), ('S-19', 1, 'available'),
+  ('S-01', 1, 'available'), ('S-02', 1, 'available'),
+  ('S-11', 1, 'available'), ('S-20', 1, 'available'), ('S-21', 1, 'available'),
+  ('S-22', 1, 'available'), ('S-23', 1, 'available'), ('S-24', 1, 'available'),
+  ('S-03', 1, 'available'), ('S-04', 1, 'available'), ('S-05', 1, 'available'),
+  ('S-06', 1, 'available'), ('S-07', 1, 'available'), ('S-08', 1, 'available'),
+  ('S-09', 1, 'available'),
+  ('S-13', 1, 'available'), ('S-12', 1, 'available');
+`;
+
+const seedRoom2Seats = `
+INSERT INTO seats (seat_number, room_id, status) VALUES
+  ('S-31', 2, 'available'), ('S-32', 2, 'available'), ('S-33', 2, 'available'),
+  ('S-34', 2, 'available'), ('S-35', 2, 'available'),
+  ('S-30', 2, 'available'), ('S-29', 2, 'available'), ('S-28', 2, 'available'),
+  ('S-27', 2, 'available'), ('S-26', 2, 'available'), ('S-25', 2, 'available'),
+  ('S-36', 2, 'available'), ('S-37', 2, 'available'), ('S-38', 2, 'available'),
+  ('S-39', 2, 'available'), ('S-40', 2, 'available'), ('S-41', 2, 'available'),
+  ('S-42', 2, 'available'),
+  ('S-43', 2, 'available');
+`;
+
+const seedRoom3Seats = `
+INSERT INTO seats (seat_number, room_id, status) VALUES
+  ('S3-14', 3, 'available'), ('S3-15', 3, 'available'),
+  ('S3-16', 3, 'available'), ('S3-17', 3, 'available');
+`;
+
+const seedSeatLayouts = `
+DO $$
+BEGIN
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'top', CASE seat_number
+    WHEN 'S-10' THEN 1 WHEN 'S-18' THEN 2 WHEN 'S-19' THEN 3
+    WHEN 'S-01' THEN 4 WHEN 'S-02' THEN 5 END
+  FROM seats WHERE seat_number IN ('S-10','S-18','S-19','S-01','S-02') AND room_id = 1;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'left', CASE seat_number
+    WHEN 'S-11' THEN 1 WHEN 'S-20' THEN 2 WHEN 'S-21' THEN 3
+    WHEN 'S-22' THEN 4 WHEN 'S-23' THEN 5 WHEN 'S-24' THEN 6 END
+  FROM seats WHERE seat_number IN ('S-11','S-20','S-21','S-22','S-23','S-24') AND room_id = 1;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'right', CASE seat_number
+    WHEN 'S-03' THEN 1 WHEN 'S-04' THEN 2 WHEN 'S-05' THEN 3
+    WHEN 'S-06' THEN 4 WHEN 'S-07' THEN 5 WHEN 'S-08' THEN 6 WHEN 'S-09' THEN 7 END
+  FROM seats WHERE seat_number IN ('S-03','S-04','S-05','S-06','S-07','S-08','S-09') AND room_id = 1;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'bottom', CASE seat_number
+    WHEN 'S-13' THEN 1 WHEN 'S-12' THEN 2 END
+  FROM seats WHERE seat_number IN ('S-13','S-12') AND room_id = 1;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'top', CASE seat_number
+    WHEN 'S-31' THEN 1 WHEN 'S-32' THEN 2 WHEN 'S-33' THEN 3
+    WHEN 'S-34' THEN 4 WHEN 'S-35' THEN 5 END
+  FROM seats WHERE seat_number IN ('S-31','S-32','S-33','S-34','S-35') AND room_id = 2;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'left', CASE seat_number
+    WHEN 'S-30' THEN 1 WHEN 'S-29' THEN 2 WHEN 'S-28' THEN 3
+    WHEN 'S-27' THEN 4 WHEN 'S-26' THEN 5 WHEN 'S-25' THEN 6 END
+  FROM seats WHERE seat_number IN ('S-30','S-29','S-28','S-27','S-26','S-25') AND room_id = 2;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'right', CASE seat_number
+    WHEN 'S-36' THEN 1 WHEN 'S-37' THEN 2 WHEN 'S-38' THEN 3
+    WHEN 'S-39' THEN 4 WHEN 'S-40' THEN 5 WHEN 'S-41' THEN 6 WHEN 'S-42' THEN 7 END
+  FROM seats WHERE seat_number IN ('S-36','S-37','S-38','S-39','S-40','S-41','S-42') AND room_id = 2;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'bottom', 1
+  FROM seats WHERE seat_number = 'S-43' AND room_id = 2;
+
+  INSERT INTO seat_layouts (seat_id, position, sort_order)
+  SELECT id, 'middle', CASE seat_number
+    WHEN 'S3-14' THEN 1 WHEN 'S3-15' THEN 2
+    WHEN 'S3-16' THEN 3 WHEN 'S3-17' THEN 4 END
+  FROM seats WHERE seat_number IN ('S3-14','S3-15','S3-16','S3-17') AND room_id = 3;
+END $$;
+`;
+
+const seedPaymentSettings = `
+INSERT INTO payment_settings (setting_key, setting_value) VALUES
+  ('qr_image_url', '/uploads/qr/phonepe-qr.jpeg'),
+  ('receiver_name', 'NISHANT SAHU'),
+  ('upi_id', 'lakshyalibrary@okicicibank'),
+  ('upi_note', 'Pay only after verifying receiver name: NISHANT SAHU');
+`;
+
+async function migrate() {
+  const startTime = Date.now();
+  const isFresh = process.argv.includes("--fresh");
+  console.log("Starting migration..." + (isFresh ? " (fresh reset)" : ""));
+
+  // Check if tables already exist
+  const { rows: tableCheck } = await pool.query(
+    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users')"
+  );
+  const tablesExist = tableCheck[0].exists;
+
+  if (!tablesExist || isFresh) {
+    // Full reset: drop and recreate everything
+    for (const sql of dropTables) {
+      await pool.query(sql);
+    }
+    console.log("Dropped all old tables.");
+
+    for (const sql of createTables) {
+      await pool.query(sql);
+    }
+    console.log("Created all tables.");
+
+    await pool.query(seedFeePlans);
+    console.log("Seeded 5 fee plans.");
+
+    await pool.query(seedRooms);
+    console.log("Seeded 3 rooms.");
+
+    await pool.query(seedRoom1Seats);
+    await pool.query(seedRoom2Seats);
+    await pool.query(seedRoom3Seats);
+    console.log("Seeded 43 seats (Room 1: 20, Room 2: 19, Room 3: 4).");
+
+    await pool.query(seedSeatLayouts);
+    console.log("Seeded seat layouts.");
+
+    await pool.query(seedPaymentSettings);
+    console.log("Seeded payment settings.");
+
+    const adminEmail = process.env.ADMIN_EMAIL || "admin@library.com";
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminPassword) {
+      console.error("ERROR: ADMIN_PASSWORD must be set in .env before running migration.");
+      process.exit(1);
+    }
+    const hash = await bcrypt.hash(adminPassword, 10);
+    await pool.query(
+      "INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, 'admin')",
+      ["Admin", adminEmail, hash]
+    );
+    console.log(`Seeded admin user: ${adminEmail}`);
+  } else {
+    console.log("Tables already exist — skipping drop/create/seed.");
+  }
+
+  // Safe ALTER TABLE migrations for existing databases
+  const alterStatements = [
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS booking_source VARCHAR(20) DEFAULT 'online'`,
+    `ALTER TABLE seats ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'available'`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'seats_status_check') THEN
+        ALTER TABLE seats DROP CONSTRAINT IF EXISTS seats_status_check;
+        ALTER TABLE seats ADD CONSTRAINT seats_status_check CHECK (status IN ('available', 'booked', 'reserved', 'disabled'));
+      END IF;
+    END $$`,
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(20) DEFAULT ''`,
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS amount_paid INTEGER DEFAULT 0`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`,
+  ];
+
+  for (const sql of alterStatements) {
+    try {
+      await pool.query(sql);
+    } catch (err) {
+      // Ignore errors from ALTER if columns already exist or constraints already applied
+      if (!err.message.includes("already exists") && !err.message.includes("column") && !err.message.includes("constraint")) {
+        console.warn(`ALTER warning: ${err.message}`);
+      }
+    }
+  }
+  console.log("Applied safe schema alterations.");
+
+  // --- Membership expiry sync ---
+  // Expire memberships past their end_date (safe, idempotent)
+  await pool.query(`
+    UPDATE memberships SET status = 'expired'
+    WHERE status = 'active' AND end_date < CURRENT_DATE
+  `);
+  console.log("Expired memberships past their end date.");
+
+  // Cancel bookings where membership is expired or booking_end date has passed
+  await pool.query(`
+    UPDATE bookings SET status = 'cancelled'
+    WHERE status = 'active'
+      AND (
+        booking_end < CURRENT_DATE
+        OR EXISTS (
+          SELECT 1 FROM memberships m
+          WHERE m.user_id = bookings.user_id
+            AND m.fee_plan_id = bookings.fee_plan_id
+            AND m.end_date < CURRENT_DATE
+            AND m.status = 'expired'
+        )
+      )
+  `);
+  console.log("Cancelled expired bookings.");
+
+  // Release seats that have no active bookings
+  await pool.query(`
+    UPDATE seats SET status = 'available'
+    WHERE status = 'booked'
+      AND NOT EXISTS (
+        SELECT 1 FROM bookings b
+        WHERE b.seat_id = seats.id AND b.status = 'active'
+      )
+  `);
+  console.log("Released seats with no active bookings.");
+
+  // Safe data repair: re-activate bookings incorrectly cancelled by seat status resets
+  // Only repairs when: booking is cancelled AND seat is available AND no other active booking exists for that seat
+  await pool.query(`
+    UPDATE bookings b
+    SET status = 'active'
+    WHERE b.status = 'cancelled'
+      AND EXISTS (SELECT 1 FROM seats s WHERE s.id = b.seat_id AND s.status = 'available')
+      AND b.booking_end >= CURRENT_DATE
+      AND NOT EXISTS (
+        SELECT 1 FROM bookings b2
+        WHERE b2.seat_id = b.seat_id AND b2.status = 'active' AND b2.id != b.id
+      )
+      AND EXISTS (
+        SELECT 1 FROM memberships m
+        WHERE m.user_id = b.user_id AND m.fee_plan_id = b.fee_plan_id
+          AND m.status = 'active' AND m.end_date >= CURRENT_DATE
+      )
+  `);
+  // Mark seats as booked if they have an active booking
+  await pool.query(`
+    UPDATE seats s
+    SET status = 'booked'
+    WHERE EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id AND b.status = 'active')
+      AND s.status = 'available'
+  `);
+  console.log("Repaired incorrectly cancelled bookings and seat statuses.");
+
+  // Log counts
+  const tables = [
+    "users", "rooms", "seats", "seat_layouts", "fee_plans",
+    "memberships", "bookings", "payments", "notifications",
+    "lost_found", "payment_settings",
+  ];
+
+  console.log("\n--- Table Counts ---");
+  for (const table of tables) {
+    const { rows } = await pool.query(`SELECT COUNT(*) FROM ${table}`);
+    console.log(`  ${table}: ${rows[0].count}`);
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+  console.log(`\nMigration complete in ${elapsed}s.`);
+  await pool.end();
+}
+
+migrate().catch((err) => {
+  console.error("Migration failed:", err);
+  process.exit(1);
+});

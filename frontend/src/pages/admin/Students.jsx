@@ -1,0 +1,390 @@
+import { useState, useEffect, useCallback } from "react";
+import { adminAPI } from "../../services/api";
+import { useToast } from "../../context/useToast";
+
+function Students() {
+  const toast = useToast();
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+
+  const [assignModal, setAssignModal] = useState(null);
+  const [availableSeats, setAvailableSeats] = useState([]);
+  const [selectedSeatId, setSelectedSeatId] = useState("");
+  const [assigning, setAssigning] = useState(false);
+
+  const [viewModal, setViewModal] = useState(null);
+
+  const [renewModal, setRenewModal] = useState(null);
+  const [feePlans, setFeePlans] = useState([]);
+  const [renewForm, setRenewForm] = useState({
+    fee_plan_id: "",
+    amount: "",
+    admin_note: "",
+  });
+  const [renewing, setRenewing] = useState(false);
+
+  const fetchStudents = useCallback(() => {
+    adminAPI.getStudents()
+      .then(setStudents)
+      .catch(() => toast.error("Failed to load students"))
+      .finally(() => setLoading(false));
+  }, [toast]);
+
+  useEffect(() => {
+    fetchStudents();
+  }, [fetchStudents]);
+
+  const filtered = students.filter(
+    (s) =>
+      s.name?.toLowerCase().includes(search.toLowerCase()) ||
+      s.email?.toLowerCase().includes(search.toLowerCase()) ||
+      s.phone?.includes(search)
+  );
+
+  const openAssignModal = async (student) => {
+    setAssignModal(student);
+    setSelectedSeatId("");
+    try {
+      const seats = await adminAPI.getAvailableSeats();
+      setAvailableSeats(seats);
+    } catch {
+      toast.error("Failed to load available seats");
+    }
+  };
+
+  const handleAssignSeat = async () => {
+    if (!selectedSeatId || !assignModal) return;
+    const seat = availableSeats.find((s) => s.id === Number(selectedSeatId));
+    if (!seat) return;
+
+    const hasSeat = !!assignModal.current_seat;
+    const confirmMsg = hasSeat
+      ? `Change seat from ${assignModal.current_seat} to ${seat.seat_number}?`
+      : `Assign seat ${seat.seat_number} to ${assignModal.name}?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    setAssigning(true);
+    try {
+      const result = await adminAPI.assignSeat(assignModal.id, Number(selectedSeatId));
+      toast.success(result.message);
+      setAssignModal(null);
+      fetchStudents();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const openRenewModal = async (student) => {
+    setRenewModal(student);
+    setRenewForm({ fee_plan_id: "", amount: "", admin_note: "" });
+    try {
+      const plans = await adminAPI.getFeePlans();
+      setFeePlans(plans.filter((p) => p.is_active));
+    } catch {
+      toast.error("Failed to load fee plans");
+    }
+  };
+
+  const handleRenewPlanChange = (planId) => {
+    const plan = feePlans.find((p) => p.id === Number(planId));
+    setRenewForm((prev) => ({
+      ...prev,
+      fee_plan_id: planId,
+      amount: plan ? String(plan.price) : "",
+    }));
+  };
+
+  const renewStartDate = new Date().toISOString().split("T")[0];
+  const renewEndDate = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    return d.toISOString().split("T")[0];
+  })();
+
+  const handleRenew = async () => {
+    if (!renewModal || !renewForm.fee_plan_id || !renewForm.amount) return;
+
+    setRenewing(true);
+    try {
+      const result = await adminAPI.renewMembership({
+        student_id: renewModal.id,
+        fee_plan_id: Number(renewForm.fee_plan_id),
+        amount: Number(renewForm.amount),
+        payment_method: "cash",
+        admin_note: renewForm.admin_note,
+      });
+      toast.success(result.message);
+      setRenewModal(null);
+      fetchStudents();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setRenewing(false);
+    }
+  };
+
+  const isExpired = (s) => s.membership_status === "expired";
+
+  if (loading) return <div className="empty-state"><div className="spinner" /><p>Loading...</p></div>;
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <div className="label">Admin Panel</div>
+          <h1>Students</h1>
+          <div className="subtitle">{students.length} registered students</div>
+        </div>
+      </div>
+
+      <div className="search-bar">
+        <input type="text" placeholder="Search by name, email, or phone..." value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state"><h3>No students found</h3></div>
+      ) : (
+        <div className="table-container seats-table-card">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Membership</th>
+                <th>Seat</th>
+                <th>Source</th>
+                <th>Expiry</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((s) => (
+                <tr key={s.id}>
+                  <td data-label="Name">{s.name}</td>
+                  <td data-label="Email">{s.email}</td>
+                  <td data-label="Phone">{s.phone || "\u2014"}</td>
+                  <td data-label="Membership">
+                    <span className={`status-badge ${s.membership_status === "active" ? "status-active" : s.membership_status === "pending" ? "status-pending" : s.membership_status === "expired" ? "status-expired" : "status-expired"}`}>
+                      {s.membership_status || "None"}
+                    </span>
+                  </td>
+                  <td data-label="Seat"><strong>{s.current_seat || "\u2014"}</strong></td>
+                  <td data-label="Source">
+                    {s.booking_source ? (
+                      <span style={{
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        fontSize: "0.8em",
+                        fontWeight: 600,
+                        background: s.booking_source === "online" ? "#16a34a20" : "#f59e0b20",
+                        color: s.booking_source === "online" ? "#16a34a" : "#f59e0b",
+                      }}>
+                        {s.booking_source === "online" ? "Online" : "Offline"}
+                      </span>
+                    ) : "\u2014"}
+                  </td>
+                  <td data-label="Expiry">{s.membership_expiry ? new Date(s.membership_expiry).toLocaleDateString() : "\u2014"}</td>
+                  <td data-label="Actions" className="actions-cell">
+                    <button className="btn btn-secondary btn-sm" onClick={() => setViewModal(s)} style={{ marginRight: 4 }}>
+                      View
+                    </button>
+                    {isExpired(s) ? (
+                      <button
+                        className="btn btn-success btn-sm"
+                        onClick={() => openRenewModal(s)}
+                      >
+                        Renew
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => openAssignModal(s)}
+                      >
+                        {s.current_seat ? "Change Seat" : "Assign Seat"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {assignModal && (
+        <div className="modal-overlay" onClick={() => setAssignModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{assignModal.current_seat ? "Change Seat" : "Assign Seat"}</h2>
+              <button className="modal-close" onClick={() => setAssignModal(null)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p><strong>Student:</strong> {assignModal.name}</p>
+              <p><strong>Email:</strong> {assignModal.email}</p>
+              <p><strong>Current Seat:</strong> {assignModal.current_seat || "None"}</p>
+
+              <div className="form-group" style={{ marginTop: 16 }}>
+                <label>Select Available Seat</label>
+                <select
+                  value={selectedSeatId}
+                  onChange={(e) => setSelectedSeatId(e.target.value)}
+                  className="form-control"
+                >
+                  <option value="">Choose a seat...</option>
+                  {availableSeats.map((seat) => (
+                    <option key={seat.id} value={seat.id}>
+                      {seat.seat_number} ({seat.room_name})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {availableSeats.length === 0 && (
+                <p style={{ color: "#f59e0b", marginTop: 8 }}>No available seats at the moment.</p>
+              )}
+
+              <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="btn btn-secondary" onClick={() => setAssignModal(null)}>Cancel</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleAssignSeat}
+                  disabled={!selectedSeatId || assigning}
+                >
+                  {assigning ? "Assigning..." : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewModal && (
+        <div className="modal-overlay" onClick={() => setViewModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Student Details</h2>
+              <button className="modal-close" onClick={() => setViewModal(null)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p><strong>Name:</strong> {viewModal.name}</p>
+              <p><strong>Email:</strong> {viewModal.email}</p>
+              <p><strong>Phone:</strong> {viewModal.phone || "\u2014"}</p>
+              <p><strong>Membership:</strong> {viewModal.membership_status || "None"}</p>
+              <p><strong>Plan:</strong> {viewModal.plan_name || "\u2014"}</p>
+              <p><strong>Seat:</strong> {viewModal.current_seat || "No Active Seat"}</p>
+              <p><strong>Room:</strong> {viewModal.current_room || "\u2014"}</p>
+              <p><strong>Booking Source:</strong> {viewModal.booking_source ? (viewModal.booking_source === "online" ? "Online" : "Offline") : "\u2014"}</p>
+              <p><strong>Expiry:</strong> {viewModal.membership_expiry ? new Date(viewModal.membership_expiry).toLocaleDateString() : "\u2014"}</p>
+              <p><strong>Registered:</strong> {new Date(viewModal.created_at).toLocaleDateString()}</p>
+
+              <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="btn btn-secondary" onClick={() => setViewModal(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {renewModal && (
+        <div className="modal-overlay" onClick={() => setRenewModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Renew Membership</h2>
+              <button className="modal-close" onClick={() => setRenewModal(null)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p><strong>Student:</strong> {renewModal.name}</p>
+              <p><strong>Email:</strong> {renewModal.email}</p>
+              <p>
+                <strong>Current Status:</strong>{" "}
+                <span className={`status-badge status-expired`}>
+                  {renewModal.membership_status || "None"}
+                </span>
+              </p>
+              <p><strong>Current Expiry:</strong> {renewModal.membership_expiry ? new Date(renewModal.membership_expiry).toLocaleDateString("en-IN") : "\u2014"}</p>
+
+              <div className="form-group" style={{ marginTop: 16 }}>
+                <label>Timing / Fee Plan</label>
+                <select
+                  value={renewForm.fee_plan_id}
+                  onChange={(e) => handleRenewPlanChange(e.target.value)}
+                  className="form-control"
+                >
+                  <option value="">Select a plan...</option>
+                  {feePlans.map((plan) => (
+                    <option key={plan.id} value={plan.id}>
+                      {plan.name} — ₹{plan.price}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginTop: 12 }}>
+                <label>Amount (₹)</label>
+                <input
+                  type="number"
+                  value={renewForm.amount}
+                  onChange={(e) => setRenewForm((prev) => ({ ...prev, amount: e.target.value }))}
+                  className="form-control"
+                  min="1"
+                  readOnly={!!renewForm.fee_plan_id}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginTop: 12 }}>
+                <label>Payment Method</label>
+                <input
+                  type="text"
+                  value="Offline / Cash"
+                  className="form-control"
+                  readOnly
+                  style={{ opacity: 0.7, cursor: "not-allowed" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Start Date</label>
+                  <input type="text" value={renewStartDate} className="form-control" readOnly style={{ opacity: 0.7 }} />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>New Expiry Date</label>
+                  <input type="text" value={renewEndDate} className="form-control" readOnly style={{ opacity: 0.7 }} />
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginTop: 12 }}>
+                <label>Admin Note (optional)</label>
+                <textarea
+                  value={renewForm.admin_note}
+                  onChange={(e) => setRenewForm((prev) => ({ ...prev, admin_note: e.target.value }))}
+                  className="form-control"
+                  rows={2}
+                  placeholder="Optional note..."
+                />
+              </div>
+
+              <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="btn btn-secondary" onClick={() => setRenewModal(null)}>Cancel</button>
+                <button
+                  className="btn btn-success"
+                  onClick={handleRenew}
+                  disabled={!renewForm.fee_plan_id || !renewForm.amount || renewing}
+                >
+                  {renewing ? "Renewing..." : "Confirm Renewal"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default Students;
