@@ -5,7 +5,9 @@ import pool from "../config/db.js";
 export async function getDashboard(_req, res) {
   try {
     const { rows: students } = await pool.query(
-      "SELECT COUNT(*) FROM users WHERE role = 'student'"
+      `SELECT COUNT(DISTINCT u.id) FROM users u
+       JOIN memberships m ON m.user_id = u.id
+       WHERE u.role = 'student' AND m.status = 'active' AND m.end_date >= CURRENT_DATE`
     );
     const { rows: totalSeats } = await pool.query("SELECT COUNT(*) FROM seats");
     const { rows: availableSeats } = await pool.query(
@@ -18,7 +20,7 @@ export async function getDashboard(_req, res) {
       "SELECT COUNT(*) FROM seats WHERE status = 'disabled'"
     );
     const { rows: activeMemberships } = await pool.query(
-      "SELECT COUNT(*) FROM memberships WHERE status = 'active'"
+      "SELECT COUNT(*) FROM memberships WHERE status = 'active' AND end_date >= CURRENT_DATE"
     );
     const { rows: pendingPayments } = await pool.query(
       "SELECT COUNT(*) FROM payments WHERE status = 'pending'"
@@ -75,7 +77,7 @@ export async function getStudents(_req, res) {
          SELECT m.status, fp.name as plan_name, m.end_date as membership_expiry
          FROM memberships m
          LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
-         WHERE m.user_id = u.id AND m.status = 'active'
+         WHERE m.user_id = u.id AND m.status = 'active' AND m.end_date >= CURRENT_DATE
          ORDER BY m.created_at DESC
          LIMIT 1
        ) latest_m ON true
@@ -1196,11 +1198,13 @@ export async function renewMembership(req, res) {
 export async function getReports(_req, res) {
   try {
     const { rows: totalStudents } = await pool.query(
-      "SELECT COUNT(*) FROM users WHERE role = 'student'"
+      `SELECT COUNT(DISTINCT u.id) FROM users u
+       JOIN memberships m ON m.user_id = u.id
+       WHERE u.role = 'student' AND m.status = 'active' AND m.end_date >= CURRENT_DATE`
     );
     const { rows: totalSeats } = await pool.query("SELECT COUNT(*) FROM seats");
     const { rows: activeMemberships } = await pool.query(
-      "SELECT COUNT(*) FROM memberships WHERE status = 'active'"
+      "SELECT COUNT(*) FROM memberships WHERE status = 'active' AND end_date >= CURRENT_DATE"
     );
     const { rows: totalRevenue } = await pool.query(
       "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed'"
