@@ -30,16 +30,6 @@ export const uploadScreenshot = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 }).single("screenshot");
 
-const qrDir = path.join(__dirname, "../../uploads/screenshots/payment");
-if (!fs.existsSync(qrDir)) {
-  fs.mkdirSync(qrDir, { recursive: true });
-}
-
-const qrStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, qrDir),
-  filename: (_req, _file, cb) => cb(null, "active-qr.jpg"),
-});
-
 const qrFileFilter = (_req, file, cb) => {
   const allowedMime = ["image/jpeg", "image/png", "image/webp"];
   const allowedExt = [".jpg", ".jpeg", ".png", ".webp"];
@@ -51,7 +41,7 @@ const qrFileFilter = (_req, file, cb) => {
 };
 
 export const uploadQR = multer({
-  storage: qrStorage,
+  storage: multer.memoryStorage(),
   fileFilter: qrFileFilter,
   limits: { fileSize: 5 * 1024 * 1024 },
 }).single("qr");

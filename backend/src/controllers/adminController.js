@@ -882,7 +882,9 @@ export async function getPaymentSettings(_req, res) {
     const { rows } = await pool.query("SELECT * FROM payment_settings ORDER BY setting_key");
     const settings = {};
     for (const row of rows) {
-      if (row.setting_key === "qr_image_url") settings.qr_code_url = row.setting_value;
+      if (row.setting_key === "qr_image_url") {
+        settings.qr_code_url = row.qr_image_data ? "/api/settings/payment-qr" : row.setting_value;
+      }
       else if (row.setting_key === "receiver_name") settings.receiver_name = row.setting_value;
       else if (row.setting_key === "upi_id") settings.upi_id = row.setting_value;
       else if (row.setting_key === "upi_note") settings.note = row.setting_value;
@@ -923,10 +925,13 @@ export async function uploadQRCode(req, res) {
       return res.status(400).json({ error: "QR image file is required" });
     }
 
-    const qrUrl = "/uploads/screenshots/payment/active-qr.jpg";
+    const qrUrl = "/api/settings/payment-qr";
     await pool.query(
-      "UPDATE payment_settings SET setting_value = $1, updated_by = $2, updated_at = NOW() WHERE setting_key = 'qr_image_url'",
-      [qrUrl, req.user.id]
+      `UPDATE payment_settings
+       SET setting_value = $1, qr_image_data = $2, qr_image_mime_type = $3,
+           updated_by = $4, updated_at = NOW()
+       WHERE setting_key = 'qr_image_url'`,
+      [qrUrl, req.file.buffer, req.file.mimetype, req.user.id]
     );
 
     const { rows } = await pool.query("SELECT * FROM payment_settings ORDER BY setting_key");

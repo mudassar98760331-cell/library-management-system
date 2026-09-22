@@ -1,6 +1,12 @@
 import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import pool from "../config/db.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
@@ -320,6 +326,8 @@ async function migrate() {
     `ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(20) DEFAULT ''`,
     `ALTER TABLE payments ADD COLUMN IF NOT EXISTS amount_paid INTEGER DEFAULT 0`,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`,
+    `ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS qr_image_data BYTEA`,
+    `ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS qr_image_mime_type VARCHAR(50) DEFAULT ''`,
   ];
 
   for (const sql of alterStatements) {
@@ -333,6 +341,35 @@ async function migrate() {
     }
   }
   console.log("Applied safe schema alterations.");
+
+  // Migrate existing QR file from filesystem into PostgreSQL (if not already stored)
+  try {
+    const { rows: qrCheck } = await pool.query(
+      "SELECT qr_image_data FROM payment_settings WHERE setting_key = 'qr_image_url' LIMIT 1"
+    );
+    if (qrCheck.length > 0 && !qrCheck[0].qr_image_data) {
+      const possiblePaths = [
+        path.join(__dirname, "../../uploads/screenshots/payment/active-qr.jpg"),
+        path.join(__dirname, "../../uploads/qr/phonepe-qr.jpeg"),
+      ];
+      for (const filePath of possiblePaths) {
+        if (fs.existsSync(filePath)) {
+          const data = fs.readFileSync(filePath);
+          const ext = path.extname(filePath).toLowerCase();
+          const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" };
+          const mime = mimeMap[ext] || "image/jpeg";
+          await pool.query(
+            "UPDATE payment_settings SET qr_image_data = $1, qr_image_mime_type = $2 WHERE setting_key = 'qr_image_url'",
+            [data, mime]
+          );
+          console.log(`Migrated existing QR file into PostgreSQL: ${filePath}`);
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`QR migration skip: ${err.message}`);
+  }
 
   // --- Membership expiry sync ---
   // Expire memberships past their end_date (safe, idempotent)

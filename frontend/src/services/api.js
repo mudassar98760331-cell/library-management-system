@@ -13,8 +13,18 @@ async function request(endpoint, options = {}) {
     delete config.headers["Content-Type"];
   }
   const res = await fetch(`${API_BASE}${endpoint}`, config);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Something went wrong");
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(res.ok ? "Invalid server response" : text);
+    }
+  } else if (res.ok) {
+    return {};
+  }
+  if (!res.ok) throw new Error((data && data.error) || "Something went wrong");
   return data;
 }
 
