@@ -130,12 +130,7 @@ export const adminAPI = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  getSettings: () =>
-    request("/admin/settings").then((rows) => {
-      const s = {};
-      for (const r of rows) s[r.setting_key] = r.setting_value;
-      return s;
-    }),
+  getSettings: () => request("/admin/settings"),
   updateSettings: (data) =>
     request("/admin/settings", {
       method: "PUT",

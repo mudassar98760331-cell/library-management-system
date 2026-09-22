@@ -19,7 +19,14 @@ function Payment() {
 
   useEffect(() => {
     if (!plan || !seat) { navigate("/student/membership"); return; }
-    fetch("/api/settings").then((r) => r.json()).then(setSettings).catch(() => {}).finally(() => setLoading(false));
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((t) => {
+        if (!t) return;
+        try { setSettings(JSON.parse(t)); } catch { /* ignore non-JSON */ }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatTime = (m) => {
