@@ -137,7 +137,7 @@ function Students() {
         <div>
           <div className="label">Admin Panel</div>
           <h1>Students</h1>
-          <div className="subtitle">{students.length} registered students</div>
+          <div className="subtitle">{students.length} active members</div>
         </div>
       </div>
 
@@ -279,6 +279,10 @@ function Students() {
               <p><strong>Seat:</strong> {viewModal.current_seat || "No Active Seat"}</p>
               <p><strong>Room:</strong> {viewModal.current_room || "\u2014"}</p>
               <p><strong>Booking Source:</strong> {viewModal.booking_source ? (viewModal.booking_source === "online" ? "Online" : "Offline") : "\u2014"}</p>
+              <p><strong>Booking Status:</strong> {viewModal.booking_status ? viewModal.booking_status.charAt(0).toUpperCase() + viewModal.booking_status.slice(1) : "\u2014"}</p>
+              <p><strong>Booked On:</strong> {viewModal.booked_at ? new Date(viewModal.booked_at).toLocaleDateString() : "\u2014"}</p>
+              <p><strong>Booking Period:</strong> {viewModal.booking_start && viewModal.booking_end ? `${new Date(viewModal.booking_start).toLocaleDateString()} \u2013 ${new Date(viewModal.booking_end).toLocaleDateString()}` : "\u2014"}</p>
+              <p><strong>Payment Status:</strong> {viewModal.payment_status ? viewModal.payment_status.charAt(0).toUpperCase() + viewModal.payment_status.slice(1) : "\u2014"}</p>
               <p><strong>Expiry:</strong> {viewModal.membership_expiry ? new Date(viewModal.membership_expiry).toLocaleDateString() : "\u2014"}</p>
               <p><strong>Registered:</strong> {new Date(viewModal.created_at).toLocaleDateString()}</p>
 

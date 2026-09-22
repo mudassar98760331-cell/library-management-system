@@ -67,19 +67,34 @@ export async function getStudents(_req, res) {
       `SELECT u.id, u.name, u.email, u.phone, u.created_at, u.is_active,
         latest_m.status as membership_status, latest_m.plan_name, latest_m.membership_expiry,
         s.seat_number as current_seat, s.id as seat_id, r.name as current_room,
-        b.id as booking_id, b.booking_source
+        b.id as booking_id, b.booking_source, b.status as booking_status,
+        b.booked_at, b.booking_start, b.booking_end,
+        latest_p.status as payment_status
        FROM users u
-       LEFT JOIN LATERAL (
+       JOIN LATERAL (
          SELECT m.status, fp.name as plan_name, m.end_date as membership_expiry
          FROM memberships m
          LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
-         WHERE m.user_id = u.id
+         WHERE m.user_id = u.id AND m.status = 'active'
          ORDER BY m.created_at DESC
          LIMIT 1
        ) latest_m ON true
-       LEFT JOIN bookings b ON u.id = b.user_id AND b.status = 'active'
+       LEFT JOIN LATERAL (
+         SELECT b2.*
+         FROM bookings b2
+         WHERE b2.user_id = u.id
+         ORDER BY (b2.status = 'active') DESC, b2.booked_at DESC
+         LIMIT 1
+       ) b ON true
        LEFT JOIN seats s ON b.seat_id = s.id
        LEFT JOIN rooms r ON s.room_id = r.id
+       LEFT JOIN LATERAL (
+         SELECT p.status
+         FROM payments p
+         WHERE p.user_id = u.id
+         ORDER BY p.created_at DESC
+         LIMIT 1
+       ) latest_p ON true
        WHERE u.role = 'student'
        ORDER BY u.created_at DESC`
     );
