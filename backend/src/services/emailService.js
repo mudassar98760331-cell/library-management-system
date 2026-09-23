@@ -6,7 +6,11 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // EMAIL_PROVIDER: "smtp" (production) | "test" (local outbox for smoke tests) | "" (disabled)
-const provider = (process.env.EMAIL_PROVIDER || "").trim().toLowerCase();
+// Read dynamically each call — never freeze at module load (Render env is only
+// reliable once the process is fully up; a module-level const can stick to "").
+function getProvider() {
+  return (process.env.EMAIL_PROVIDER || "").trim().toLowerCase();
+}
 
 function otpExpiryMinutes() {
   const n = Number(process.env.OTP_EXPIRY_MINUTES);
@@ -14,6 +18,7 @@ function otpExpiryMinutes() {
 }
 
 export function isEmailConfigured() {
+  const provider = getProvider();
   if (provider === "test") return true;
   if (provider === "smtp") {
     return Boolean(
@@ -86,7 +91,7 @@ async function sendTestOutbox(message) {
 
 export async function sendOtpEmail(to, otp) {
   const message = buildOtpEmail(to, otp);
-  if (provider === "test") {
+  if (getProvider() === "test") {
     await sendTestOutbox(message);
     return;
   }
