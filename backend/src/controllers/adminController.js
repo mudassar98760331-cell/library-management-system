@@ -60,6 +60,7 @@ export async function getStudents(_req, res) {
     // Booking prefers active > pending > latest; payment is the student's latest payment.
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.created_at, u.is_active,
+        COALESCE(u.password_set, true) as password_set,
         lm.status as membership_status, lm.plan_name, lm.membership_expiry, lm.membership_id,
         s.seat_number as current_seat, s.id as seat_id, r.name as current_room,
         b.id as booking_id, b.booking_source, b.status as booking_status,
@@ -435,36 +436,76 @@ export async function createOfflineBooking(req, res) {
       return res.status(400).json({ error: "seat_id, fee_plan_id, amount, and payment_method are required" });
     }
 
+    const amountNum = Number(amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      return res.status(400).json({ error: "amount must be a positive number" });
+    }
+
+    const allowedMethods = new Set(["cash", "upi", "other"]);
+    if (!allowedMethods.has(String(payment_method).toLowerCase())) {
+      return res.status(400).json({ error: "payment_method must be cash, upi, or other" });
+    }
+
     if (!student_email && !student_name) {
       return res.status(400).json({ error: "Either student_email or student_name is required" });
+    }
+
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    let normalizedEmail = null;
+    if (student_email) {
+      normalizedEmail = String(student_email).trim().toLowerCase();
+      if (!EMAIL_RE.test(normalizedEmail)) {
+        return res.status(400).json({ error: "Valid student email is required" });
+      }
     }
 
     await client.query("BEGIN");
 
     let student;
-    if (student_email) {
-      const { rows } = await client.query(
-        "SELECT * FROM users WHERE email = $1 AND role = 'student'",
-        [student_email]
+    let createdNewStudent = false;
+    // Never select or return password/otp material from this endpoint.
+    const SAFE_USER_COLS = "id, name, email, phone, role, is_active, password_set";
+    if (normalizedEmail) {
+      const { rows: emailOwners } = await client.query(
+        "SELECT id, role FROM users WHERE LOWER(email) = $1",
+        [normalizedEmail]
       );
-      if (rows.length === 0) {
-        const tempPassword = crypto.randomBytes(12).toString("base64url");
-        const hash = await bcrypt.hash(tempPassword, 10);
+      if (emailOwners.length > 0 && emailOwners[0].role !== "student") {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "This email is already registered to an administrator account" });
+      }
+      if (emailOwners.length === 0) {
+        if (!student_name || !String(student_name).trim()) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "Student name is required to create a new student" });
+        }
+        // Admin never sets a password. Store an unusable random secret hash only;
+        // password_set = false forces email OTP activation before login.
+        const placeholderSecret = crypto.randomBytes(32).toString("hex");
+        const hash = await bcrypt.hash(placeholderSecret, 10);
+        const cleanPhone = phone ? String(phone).trim().replace(/\s+/g, "") : "";
         const { rows: newUser } = await client.query(
-          "INSERT INTO users (name, email, password, phone, role) VALUES ($1, $2, $3, $4, 'student') RETURNING *",
-          [student_name || student_email.split("@")[0], student_email, hash, phone || null]
+          `INSERT INTO users (name, email, password, phone, role, password_set)
+           VALUES ($1, $2, $3, $4, 'student', false)
+           RETURNING id, name, email, phone, role, is_active, password_set`,
+          [String(student_name).trim(), normalizedEmail, hash, cleanPhone]
         );
         student = newUser[0];
-        console.log(`Created student ${student_email} with temporary password: ${tempPassword}`);
+        createdNewStudent = true;
       } else {
+        const { rows } = await client.query(
+          `SELECT ${SAFE_USER_COLS} FROM users WHERE id = $1`,
+          [emailOwners[0].id]
+        );
         student = rows[0];
       }
     } else {
       const { rows } = await client.query(
-        "SELECT * FROM users WHERE name = $1 AND phone = $2 AND role = 'student'",
+        `SELECT ${SAFE_USER_COLS} FROM users WHERE name = $1 AND phone = $2 AND role = 'student'`,
         [student_name, phone]
       );
       if (rows.length === 0) {
+        await client.query("ROLLBACK");
         return res.status(404).json({ error: "Student not found. Provide student_email to create a new student." });
       }
       student = rows[0];
@@ -584,11 +625,36 @@ export async function createOfflineBooking(req, res) {
 
     await client.query("COMMIT");
 
+    const needsActivation = createdNewStudent || student.password_set === false;
+    const message = needsActivation
+      ? "Offline booking created successfully. The student must activate their account and set a password using the registered email."
+      : "Offline booking created successfully for the existing student.";
+
+    // Safe subsets only — never expose password, hash, OTP, or screenshot bytes.
+    const { screenshot_data, screenshot_mime_type, ...safePayment } = paymentRows[0];
     res.status(201).json({
       membership: membershipRows[0],
       booking: bookingRows[0],
-      payment: paymentRows[0],
-      message: "Offline booking created successfully",
+      payment: {
+        ...safePayment,
+        utr_number: safePayment.utr_number || "",
+        screenshot_url: safePayment.screenshot_url || "",
+        has_screenshot: false,
+      },
+      created_new_student: createdNewStudent,
+      student: {
+        id: student.id,
+        name: student.name,
+        email: student.email,
+        phone: student.phone,
+        password_set: student.password_set,
+      },
+      seat: {
+        id: Number(seat_id),
+        seat_number: seatInfoRow.seat_number || seatRows[0].seat_number,
+        room_name: seatInfoRow.room_name || null,
+      },
+      message,
     });
   } catch (err) {
     await client.query("ROLLBACK");

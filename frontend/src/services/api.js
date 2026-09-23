@@ -51,6 +51,21 @@ export const authAPI = {
       body: JSON.stringify({ name, email, password, phone }),
     }),
   getMe: () => request("/auth/me"),
+  requestOtp: (email) =>
+    request("/auth/request-otp", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  verifyOtp: (email, otp) =>
+    request("/auth/verify-otp", {
+      method: "POST",
+      body: JSON.stringify({ email, otp }),
+    }),
+  setPassword: (setup_token, password, confirm_password) =>
+    request("/auth/set-password", {
+      method: "POST",
+      body: JSON.stringify({ setup_token, password, confirm_password }),
+    }),
 };
 
 export const studentAPI = {

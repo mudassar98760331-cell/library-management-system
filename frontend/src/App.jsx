@@ -11,6 +11,7 @@ import Sidebar from "./components/Sidebar";
 import Home from "./pages/Home";
 import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
+import SetPassword from "./pages/auth/SetPassword";
 
 import StudentDashboard from "./pages/student/Dashboard";
 import SeatBooking from "./pages/student/SeatBooking";
@@ -77,6 +78,7 @@ function App() {
               <Route path="/" element={<HomeRedirect />} />
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
+              <Route path="/set-password" element={<SetPassword />} />
 
               {/* Student */}
               <Route path="/student/dashboard" element={<ProtectedRoute role="student"><StudentLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><StudentDashboard /></StudentLayout></ProtectedRoute>} />

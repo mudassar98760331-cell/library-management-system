@@ -41,3 +41,36 @@ export function validateChangePassword(req, res, next) {
   }
   next();
 }
+
+export function validateRequestOtp(req, res, next) {
+  const { email } = req.body;
+  if (!email || !EMAIL_RE.test(String(email).trim())) {
+    return res.status(400).json({ error: "Valid email is required" });
+  }
+  next();
+}
+
+export function validateVerifyOtp(req, res, next) {
+  const { email, otp } = req.body;
+  if (!email || !EMAIL_RE.test(String(email).trim())) {
+    return res.status(400).json({ error: "Valid email is required" });
+  }
+  if (!otp || !/^\d{6}$/.test(String(otp).trim())) {
+    return res.status(400).json({ error: "Valid 6-digit OTP is required" });
+  }
+  next();
+}
+
+export function validateSetPassword(req, res, next) {
+  const { setup_token, password, confirm_password } = req.body;
+  if (!setup_token || !password || !confirm_password) {
+    return res.status(400).json({ error: "Setup token, password, and confirmation are required" });
+  }
+  if (String(password).length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  }
+  if (password !== confirm_password) {
+    return res.status(400).json({ error: "Passwords do not match" });
+  }
+  next();
+}

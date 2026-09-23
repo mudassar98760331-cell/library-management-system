@@ -76,10 +76,11 @@ function SeatBooking() {
       const st = getSeatStatus(n);
       if (stats[st] !== undefined) stats[st]++; else stats.unavailable++;
     });
+    const apiRoomName = seats.find((s) => s.room_id === id)?.room_name || L.name;
     return (
       <div className="room-card" key={id}>
         <div className="room-header">
-          <h3>{L.name}</h3>
+          <h3>{apiRoomName}</h3>
           <span className="seat-count">{allSeats.length} Seats</span>
         </div>
         <div className="room-subtitle">

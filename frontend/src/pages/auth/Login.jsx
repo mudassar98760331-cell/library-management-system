@@ -50,6 +50,7 @@ function Login() {
             </button>
           </form>
           <p style={{ textAlign: 'center', margin: '12px 0', color: 'var(--text-muted)', fontSize: 13 }}>Or</p>
+          <p className="auth-link">Have an offline booking? <Link to="/set-password">Set Password / Activate Account</Link></p>
           <p className="auth-link">Don't have an account? <Link to="/register">Create one</Link></p>
         </div>
       </div>

@@ -286,6 +286,7 @@ function Students() {
               <p><strong>Payment Status:</strong> {viewModal.payment_status ? viewModal.payment_status.charAt(0).toUpperCase() + viewModal.payment_status.slice(1) : "\u2014"}</p>
               <p><strong>Expiry:</strong> {viewModal.membership_expiry ? new Date(viewModal.membership_expiry).toLocaleDateString() : "\u2014"}</p>
               <p><strong>Registered:</strong> {new Date(viewModal.created_at).toLocaleDateString()}</p>
+              <p><strong>Account:</strong> {viewModal.password_set === false ? "Password Not Set" : "Password Set"}</p>
 
               <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button className="btn btn-secondary" onClick={() => setViewModal(null)}>Close</button>

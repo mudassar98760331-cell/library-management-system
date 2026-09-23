@@ -14,7 +14,8 @@ function Payments() {
   const [rejectReason, setRejectReason] = useState("");
   const [showScreenshot, setShowScreenshot] = useState(null);
   const [offlineForm, setOfflineForm] = useState({
-    student_email: "", fee_plan_id: "", seat_id: "", amount: "",
+    student_name: "", student_email: "", phone: "",
+    fee_plan_id: "", seat_id: "", amount: "",
     payment_method: "cash", payment_date: new Date().toISOString().split("T")[0],
     start_date: "", end_date: "", notes: "",
   });
@@ -71,14 +72,22 @@ function Payments() {
     try {
       const payload = {
         ...offlineForm,
+        student_email: offlineForm.student_email.trim(),
+        student_name: offlineForm.student_name.trim(),
+        phone: offlineForm.phone.trim(),
         seat_id: Number(offlineForm.seat_id),
         fee_plan_id: Number(offlineForm.fee_plan_id),
         amount: Number(offlineForm.amount),
       };
-      await adminAPI.createOfflineBooking(payload);
-      toast.success("Offline booking created!");
+      const res = await adminAPI.createOfflineBooking(payload);
+      toast.success(res?.message || "Offline booking created successfully.");
       setShowOfflineForm(false);
-      setOfflineForm({ student_email: "", fee_plan_id: "", seat_id: "", amount: "", payment_method: "cash", payment_date: new Date().toISOString().split("T")[0], start_date: "", end_date: "", notes: "" });
+      setOfflineForm({
+        student_name: "", student_email: "", phone: "",
+        fee_plan_id: "", seat_id: "", amount: "",
+        payment_method: "cash", payment_date: new Date().toISOString().split("T")[0],
+        start_date: "", end_date: "", notes: "",
+      });
       fetchPayments();
     } catch (err) { toast.error(err.message); } finally { setSubmittingOffline(false); }
   };
@@ -112,8 +121,18 @@ function Payments() {
           <form onSubmit={handleOfflineSubmit}>
             <div className="form-row">
               <div className="form-group">
+                <label>Student Name</label>
+                <input type="text" value={offlineForm.student_name} onChange={(e) => setOfflineForm({ ...offlineForm, student_name: e.target.value })} required />
+              </div>
+              <div className="form-group">
                 <label>Student Email</label>
                 <input type="email" value={offlineForm.student_email} onChange={(e) => setOfflineForm({ ...offlineForm, student_email: e.target.value })} required />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Phone Number</label>
+                <input type="tel" value={offlineForm.phone} onChange={(e) => setOfflineForm({ ...offlineForm, phone: e.target.value })} required />
               </div>
               <div className="form-group">
                 <label>Fee Plan</label>

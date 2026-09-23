@@ -108,7 +108,7 @@ function Dashboard() {
   const isExpired = membership?.status === "expired";
   const isPending = membership?.status === "pending";
   const seatLabel = booking
-    ? `${booking.room_id ? `R${booking.room_id}` : booking.room_name || "Room"} - ${booking.seat_number}`
+    ? `${booking.room_name || "Room"} - ${booking.seat_number}`
     : "";
 
   const formatTime = (m) => {

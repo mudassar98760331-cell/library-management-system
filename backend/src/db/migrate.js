@@ -13,6 +13,7 @@ dotenv.config();
 const dropTables = [
   "DROP TABLE IF EXISTS lost_found",
   "DROP TABLE IF EXISTS help_requests",
+  "DROP TABLE IF EXISTS password_setup_otps",
   "DROP TABLE IF EXISTS notifications",
   "DROP TABLE IF EXISTS bookings",
   "DROP TABLE IF EXISTS payments",
@@ -40,6 +41,7 @@ const createTables = [
     role VARCHAR(10) DEFAULT 'student' CHECK (role IN ('student', 'admin')),
     avatar VARCHAR(255) DEFAULT '',
     is_active BOOLEAN DEFAULT true,
+    password_set BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT NOW()
   )`,
 
@@ -149,6 +151,17 @@ const createTables = [
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'resolved')),
     admin_reply TEXT DEFAULT '',
     replied_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE password_setup_otps (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    otp_hash VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 5,
+    used_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
   )`,
 
@@ -380,6 +393,21 @@ async function migrate() {
       replied_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     )`,
+    // Account activation: admin-created offline students start with password_set = false
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_set BOOLEAN DEFAULT true`,
+    // Single-use, short-lived OTPs for set-password / account activation
+    `CREATE TABLE IF NOT EXISTS password_setup_otps (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      otp_hash VARCHAR(255) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      max_attempts INTEGER DEFAULT 5,
+      used_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_password_setup_otps_user ON password_setup_otps(user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_password_setup_otps_expires ON password_setup_otps(expires_at)`,
     // Performance indexes for hot query paths
     `CREATE INDEX IF NOT EXISTS idx_bookings_user_status ON bookings(user_id, status)`,
     `CREATE INDEX IF NOT EXISTS idx_bookings_seat_status ON bookings(seat_id, status)`,
@@ -527,7 +555,7 @@ async function migrate() {
   const tables = [
     "users", "rooms", "seats", "seat_layouts", "fee_plans",
     "memberships", "bookings", "payments", "notifications",
-    "lost_found", "help_requests", "payment_settings",
+    "lost_found", "help_requests", "password_setup_otps", "payment_settings",
   ];
 
   console.log("\n--- Table Counts ---");

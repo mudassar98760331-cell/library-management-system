@@ -14,6 +14,9 @@ build/
 # Uploads (QR images, payment screenshots)
 uploads/
 
+# Local OTP email outbox (EMAIL_PROVIDER=test only)
+.otp-outbox/
+
 # Logs
 *.log
 stdout.log
