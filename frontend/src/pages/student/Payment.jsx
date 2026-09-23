@@ -53,11 +53,12 @@ function Payment() {
     if (!screenshot) { toast.error("Payment screenshot is required"); return; }
     setSubmitting(true);
     try {
-      const membership = await studentAPI.purchaseMembership(plan.id);
-      await studentAPI.bookSeat(seat.id, plan.id);
-      if (membership?.id) {
-        await studentAPI.uploadScreenshot(membership.id, screenshot);
-      }
+      await studentAPI.submitPayment({
+        fee_plan_id: plan.id,
+        seat_id: seat.id,
+        utr_number: utrNumber.trim(),
+        screenshot,
+      });
       toast.success("Payment submitted successfully!");
       navigate("/student/confirmation", {
         state: {

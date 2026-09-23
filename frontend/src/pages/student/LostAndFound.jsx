@@ -18,7 +18,7 @@ function LostAndFound() {
     e.preventDefault();
     if (!itemName.trim() || !description.trim()) { toast.error("Please fill in item name and description"); return; }
     setSubmitting(true);
-    try { await studentAPI.submitLostFound({ item_name: itemName, description, location, type }); toast.success("Item reported!"); setItemName(""); setDescription(""); setLocation(""); setItems(await studentAPI.getLostFound()); }
+    try { await studentAPI.submitLostFound({ item_name: itemName, description, location, status: type }); toast.success("Item reported!"); setItemName(""); setDescription(""); setLocation(""); setItems(await studentAPI.getLostFound()); }
     catch (err) { toast.error(err.message); } finally { setSubmitting(false); }
   };
 
@@ -41,7 +41,7 @@ function LostAndFound() {
           <div className="item-list">
             {items.map(item => (
               <div key={item.id} className="item-card">
-                <div className="item-header"><h3>{item.item_name}</h3><span className={`badge ${item.type}`}>{item.type}</span></div>
+                <div className="item-header"><h3>{item.item_name}</h3><span className={`status-badge ${item.status === "found" || item.status === "returned" ? "status-active" : item.status === "closed" ? "status-closed" : "status-pending"}`}>{item.status}</span></div>
                 <p style={{ fontSize: 13 }}>{item.description}</p>
                 {item.location && <p className="item-location">&#128205; {item.location}</p>}
                 <div className="item-meta">Reported by {item.reported_by || "Anonymous"} &bull; {new Date(item.created_at).toLocaleDateString()}</div>

@@ -37,8 +37,8 @@ npm run preview    # preview production build
 - **Auth flow**: JWT stored in `localStorage`, sent as `Bearer` token. Middleware: `authenticate` + `authorize(...roles)` in `backend/src/middleware/auth.js`.
 - **Role-based routing**: Two protected route trees — `/student/*` and `/admin/*` — gated by `ProtectedRoute` component with role prop.
 - **Migration system**: Custom script (`backend/src/db/migrate.js`), not a migration library. Uses `CREATE TABLE IF NOT EXISTS` — idempotent but not versioned. If you add tables, add them to the `migrations` array in this file.
-- **File uploads**: `multer` stores files in `backend/uploads/`, served statically at `/uploads`.
-- **No tests**: There are no test suites in either package.
+- **File uploads**: Payment screenshots and QR codes are stored as **BYTEA in PostgreSQL** (multer `memoryStorage` — never written to disk). Legacy disk files in `backend/uploads/` are still served at `/uploads` and are imported into the DB on migrate.
+- **No tests**: There are no test suites in either package. Verify changes with `npm run lint` + `npm run build` (frontend), `node --check` (backend files), `npm run migrate`, and manual API smoke tests.
 - **No typecheck**: Frontend is plain JS with JSX; no TypeScript or typecheck script exists.
 - **No CI/CD**: No GitHub Actions or pre-commit hooks configured.
 
@@ -49,20 +49,20 @@ All prefixed with `/api`:
 | Prefix | Auth | Description |
 |--------|------|-------------|
 | `/auth` | public | login, register, getMe |
-| `/student` | JWT + role=student | dashboard, seats, membership, payment-history, profile, notifications, services, help, lost-found, fee-plans, upload-screenshot |
-| `/admin` | JWT + role=admin | dashboard, students, seats, payments, offline-booking, fee-plans, settings, notifications, help, services, lost-found, reports |
+| `/student` | JWT + role=student | dashboard, seats, membership, **payment (multipart: UTR + screenshot, atomic)**, payment-history, profile, notifications, help, lost-found, fee-plans, book-seat, upload-screenshot |
+| `/admin` | JWT + role=admin | dashboard, students, seats, payments (+ `GET /payments/:id/screenshot`), offline-booking, fee-plans, settings, notifications, help (`GET /help`, `PUT /help/:id`), lost-found, reports, renew-membership |
 | `/settings` | public | get payment settings (QR code, UPI ID) |
 
 ## Frontend Routes
 
 - `/` — public home
 - `/login`, `/register` — public auth
-- `/student/*` — student dashboard, seat-booking, membership, payment, payment-history, services, help, lost-found, notifications, profile
-- `/admin/*` — admin dashboard, students, seats, memberships, payments, services, lost-found, notifications, help, reports, settings
+- `/student/*` — student dashboard, seat-booking, membership, payment, payment-history, help, lost-found, notifications, profile
+- `/admin/*` — admin dashboard, students, seats, memberships, payments, lost-found, notifications, help, reports, settings
 
-## Database Schema (13 tables)
+## Database Schema (12 tables)
 
-`users`, `rooms`, `seats`, `seat_layouts`, `fee_plans`, `memberships`, `bookings`, `payments`, `notifications`, `lost_found`, `help_requests`, `service_requests`, `payment_settings`
+`users`, `rooms`, `seats`, `seat_layouts`, `fee_plans`, `memberships`, `bookings`, `payments`, `notifications`, `lost_found`, `help_requests`, `payment_settings`
 
 ### Seeded Data
 - **Fee Plans (5)**: 24H ₹1500, 7AM-11PM ₹1200, 5AM-10AM ₹500, 10AM-6:30PM ₹1000, 7PM-12AM ₹500
@@ -74,10 +74,13 @@ All prefixed with `/api`:
 
 - **Timing-aware seat booking**: Overlap detection uses INTEGER minutes-from-midnight (avoids PostgreSQL TIME midnight edge cases). `is_24_hour BOOLEAN` flag for 24H plan. Conflict prevention at DB/transaction level using `SELECT FOR UPDATE`.
 - **Seat sharing**: Max 2 members per seat if timing intervals don't overlap; 24H plan blocks entirely.
-- **Payment flow**: QR code (admin-configurable), UTR input, screenshot upload (JPEG/PNG/WEBP, max 5MB via multer), admin approval/rejection.
+- **Payment flow**: `POST /student/payment` atomically creates membership (`pending`) + payment (`pending`, UTR + screenshot BYTEA) + booking (`pending`) + seat (`reserved`). Admin approve → payment completed / membership active / booking active / seat booked; reject → cancelled and seat released. QR code (admin-configurable), receiver name NISHANT SAHU.
+- **Membership status**: Computed in SQL (`end_date < CURRENT_DATE` → `expired`) — frontend must render the API-provided status, never derive it from JS dates.
+- **Help desk**: `help_requests` table; students submit/list own requests, admin replies (`admin_reply`) + sets status (`pending`/`in_progress`/`resolved`); replies create student notifications.
+- **Lost & Found statuses**: `lost` → `found` → `returned` → `closed`; admin actions notify the reporter only on actual change.
 - **Offline booking**: Admin can create Cash/UPI bookings with full student/seat/timing/amount/date/notes.
 - **Payment settings**: Admin-only QR code URL, receiver name, UPI ID, note — served via `/api/settings`.
-- **Dark navy/black UI** (#0a0e1a bg), neon blue accent (#3b82f6).
+- **Dark navy/black UI** (#0a0e1a bg), neon blue accent (#3b82f6). Admin navbar has **no global search** (removed — page-level search inputs remain).
 
 ## Gotchas
 
@@ -88,3 +91,5 @@ All prefixed with `/api`:
 - No Student ID field anywhere in the system.
 - Receiver name for payments must always show as NISHANT SAHU.
 - Room 3 seats are 14, 15, 16, 17 (NOT 18). Seat 18 belongs ONLY to Room 1.
+- `bookings.status` includes `'pending'` (awaiting payment approval) alongside active/cancelled/completed; seat `reserved` usually means a pending payment holds it. Seat-conflict checks must consider `status IN ('active','pending')`.
+- Never `SELECT p.*` from `payments` in list endpoints — `screenshot_data BYTEA` would bloat payloads. Use explicit columns + `(screenshot_data IS NOT NULL) AS has_screenshot`.

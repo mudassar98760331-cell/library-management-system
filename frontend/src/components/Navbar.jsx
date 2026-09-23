@@ -52,11 +52,6 @@ function Navbar({ onMenuToggle }) {
       )}
       {user && (
         <div className="nav-right">
-          <div className="nav-search">
-            <span className="nav-search-icon">&#128269;</span>
-            <input type="text" placeholder="Search..." />
-            <span className="nav-search-shortcut">Ctrl K</span>
-          </div>
           <Link to={user.role === "student" ? "/student/notifications" : "/admin/notifications"} className="nav-notif-btn">
             &#128276;
           </Link>

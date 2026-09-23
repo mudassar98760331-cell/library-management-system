@@ -12,6 +12,7 @@ dotenv.config();
 
 const dropTables = [
   "DROP TABLE IF EXISTS lost_found",
+  "DROP TABLE IF EXISTS help_requests",
   "DROP TABLE IF EXISTS notifications",
   "DROP TABLE IF EXISTS bookings",
   "DROP TABLE IF EXISTS payments",
@@ -95,7 +96,7 @@ const createTables = [
     fee_plan_id INTEGER REFERENCES fee_plans(id),
     booking_start DATE,
     booking_end DATE,
-    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed')),
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed', 'pending')),
     booking_source VARCHAR(20) DEFAULT 'online' CHECK (booking_source IN ('online', 'offline')),
     booked_at TIMESTAMP DEFAULT NOW()
   )`,
@@ -109,6 +110,8 @@ const createTables = [
     payment_type VARCHAR(20) DEFAULT 'online' CHECK (payment_type IN ('online', 'offline_cash', 'offline_upi', 'offline_other')),
     utr_number VARCHAR(100) DEFAULT '',
     screenshot_url VARCHAR(255) DEFAULT '',
+    screenshot_data BYTEA,
+    screenshot_mime_type VARCHAR(50) DEFAULT '',
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('completed', 'pending', 'rejected')),
     admin_note TEXT DEFAULT '',
     payment_date DATE,
@@ -134,7 +137,18 @@ const createTables = [
     item_name VARCHAR(200) NOT NULL,
     description TEXT DEFAULT '',
     location VARCHAR(200) DEFAULT '',
-    status VARCHAR(20) DEFAULT 'lost' CHECK (status IN ('lost', 'found', 'returned')),
+    status VARCHAR(20) DEFAULT 'lost' CHECK (status IN ('lost', 'found', 'returned', 'closed')),
+    created_at TIMESTAMP DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE help_requests (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    subject VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'resolved')),
+    admin_reply TEXT DEFAULT '',
+    replied_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
   )`,
 
@@ -328,6 +342,52 @@ async function migrate() {
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true`,
     `ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS qr_image_data BYTEA`,
     `ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS qr_image_mime_type VARCHAR(50) DEFAULT ''`,
+    // Payment screenshots stored persistently in PostgreSQL (same approach as QR BYTEA)
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS screenshot_data BYTEA`,
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS screenshot_mime_type VARCHAR(50) DEFAULT ''`,
+    // Bookings may be 'pending' while awaiting admin payment verification
+    `DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'bookings_status_check'
+          AND pg_get_constraintdef(oid) LIKE '%pending%'
+      ) THEN
+        ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_status_check;
+        ALTER TABLE bookings ADD CONSTRAINT bookings_status_check
+          CHECK (status IN ('active', 'cancelled', 'completed', 'pending'));
+      END IF;
+    END $$`,
+    // Lost & Found gains 'closed' status
+    `DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'lost_found_status_check'
+          AND pg_get_constraintdef(oid) LIKE '%closed%'
+      ) THEN
+        ALTER TABLE lost_found DROP CONSTRAINT IF EXISTS lost_found_status_check;
+        ALTER TABLE lost_found ADD CONSTRAINT lost_found_status_check
+          CHECK (status IN ('lost', 'found', 'returned', 'closed'));
+      END IF;
+    END $$`,
+    // Help desk table (student requests -> admin replies)
+    `CREATE TABLE IF NOT EXISTS help_requests (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      subject VARCHAR(200) NOT NULL,
+      message TEXT NOT NULL,
+      status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'resolved')),
+      admin_reply TEXT DEFAULT '',
+      replied_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`,
+    // Performance indexes for hot query paths
+    `CREATE INDEX IF NOT EXISTS idx_bookings_user_status ON bookings(user_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_bookings_seat_status ON bookings(seat_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_memberships_user_status ON memberships(user_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments(user_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_help_requests_user ON help_requests(user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_help_requests_status ON help_requests(status)`,
   ];
 
   for (const sql of alterStatements) {
@@ -371,74 +431,103 @@ async function migrate() {
     console.warn(`QR migration skip: ${err.message}`);
   }
 
+  // Migrate existing payment screenshot files from filesystem into PostgreSQL
+  // (Render's local filesystem is ephemeral; screenshots must live in the DB like the QR code)
+  try {
+    const { rows: shots } = await pool.query(
+      "SELECT id, screenshot_url FROM payments WHERE screenshot_data IS NULL AND screenshot_url <> ''"
+    );
+    const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" };
+    for (const row of shots) {
+      const fileName = path.basename(row.screenshot_url);
+      const possiblePaths = [
+        path.join(__dirname, "../../uploads/screenshots", fileName),
+        path.join(__dirname, "../../uploads/screenshots/payment", fileName),
+      ];
+      for (const filePath of possiblePaths) {
+        if (fs.existsSync(filePath)) {
+          const data = fs.readFileSync(filePath);
+          const ext = path.extname(filePath).toLowerCase();
+          await pool.query(
+            "UPDATE payments SET screenshot_data = $1, screenshot_mime_type = $2 WHERE id = $3",
+            [data, mimeMap[ext] || "image/jpeg", row.id]
+          );
+          console.log(`Migrated payment screenshot #${row.id} into PostgreSQL.`);
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`Screenshot migration skip: ${err.message}`);
+  }
+
   // --- Membership expiry sync ---
   // Expire memberships past their end_date (safe, idempotent)
   await pool.query(`
     UPDATE memberships SET status = 'expired'
-    WHERE status = 'active' AND end_date < CURRENT_DATE
+    WHERE status IN ('active', 'pending') AND end_date < CURRENT_DATE
   `);
   console.log("Expired memberships past their end date.");
 
-  // Cancel bookings where membership is expired or booking_end date has passed
+  // Cancel bookings (active or pending) that are past their end date, or whose
+  // LATEST membership for the same plan is expired/cancelled.
+  // Uses the latest membership only, so an old expired membership never
+  // cancels a newer renewed booking for the same plan.
   await pool.query(`
     UPDATE bookings SET status = 'cancelled'
-    WHERE status = 'active'
+    WHERE status IN ('active', 'pending')
       AND (
         booking_end < CURRENT_DATE
         OR EXISTS (
           SELECT 1 FROM memberships m
           WHERE m.user_id = bookings.user_id
             AND m.fee_plan_id = bookings.fee_plan_id
-            AND m.end_date < CURRENT_DATE
-            AND m.status = 'expired'
+            AND m.id = (
+              SELECT m2.id FROM memberships m2
+              WHERE m2.user_id = m.user_id AND m2.fee_plan_id = m.fee_plan_id
+              ORDER BY m2.created_at DESC, m2.id DESC
+              LIMIT 1
+            )
+            AND (m.status = 'cancelled' OR (m.status = 'expired' AND m.end_date < CURRENT_DATE))
         )
       )
   `);
-  console.log("Cancelled expired bookings.");
+  console.log("Cancelled expired/rejected bookings.");
 
-  // Release seats that have no active bookings
+  // Release seats that have no active or pending bookings
   await pool.query(`
     UPDATE seats SET status = 'available'
-    WHERE status = 'booked'
+    WHERE status IN ('booked', 'reserved')
       AND NOT EXISTS (
         SELECT 1 FROM bookings b
-        WHERE b.seat_id = seats.id AND b.status = 'active'
+        WHERE b.seat_id = seats.id AND b.status IN ('active', 'pending')
       )
   `);
   console.log("Released seats with no active bookings.");
 
-  // Safe data repair: re-activate bookings incorrectly cancelled by seat status resets
-  // Only repairs when: booking is cancelled AND seat is available AND no other active booking exists for that seat
-  await pool.query(`
-    UPDATE bookings b
-    SET status = 'active'
-    WHERE b.status = 'cancelled'
-      AND EXISTS (SELECT 1 FROM seats s WHERE s.id = b.seat_id AND s.status = 'available')
-      AND b.booking_end >= CURRENT_DATE
-      AND NOT EXISTS (
-        SELECT 1 FROM bookings b2
-        WHERE b2.seat_id = b.seat_id AND b2.status = 'active' AND b2.id != b.id
-      )
-      AND EXISTS (
-        SELECT 1 FROM memberships m
-        WHERE m.user_id = b.user_id AND m.fee_plan_id = b.fee_plan_id
-          AND m.status = 'active' AND m.end_date >= CURRENT_DATE
-      )
-  `);
   // Mark seats as booked if they have an active booking
   await pool.query(`
     UPDATE seats s
     SET status = 'booked'
-    WHERE EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id AND b.status = 'active')
-      AND s.status = 'available'
+    WHERE s.status IN ('available', 'reserved')
+      AND EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id AND b.status = 'active')
   `);
-  console.log("Repaired incorrectly cancelled bookings and seat statuses.");
+  // Reserve seats held by a pending (awaiting payment verification) booking
+  await pool.query(`
+    UPDATE seats s
+    SET status = 'reserved'
+    WHERE s.status = 'available'
+      AND EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id AND b.status = 'pending')
+      AND NOT EXISTS (SELECT 1 FROM bookings b2 WHERE b2.seat_id = s.id AND b2.status = 'active')
+  `);
+  console.log("Synced seat statuses with bookings.");
 
   // Log counts
   const tables = [
     "users", "rooms", "seats", "seat_layouts", "fee_plans",
     "memberships", "bookings", "payments", "notifications",
-    "lost_found", "payment_settings",
+    "lost_found", "help_requests", "payment_settings",
   ];
 
   console.log("\n--- Table Counts ---");

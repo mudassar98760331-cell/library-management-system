@@ -127,7 +127,8 @@ function Students() {
     }
   };
 
-  const isExpired = (s) => s.membership_status === "expired";
+  const isExpired = (s) => s.membership_status !== "active" && s.membership_status !== "pending";
+  const activeCount = students.filter((s) => s.membership_status === "active").length;
 
   if (loading) return <div className="empty-state"><div className="spinner" /><p>Loading...</p></div>;
 
@@ -137,7 +138,7 @@ function Students() {
         <div>
           <div className="label">Admin Panel</div>
           <h1>Students</h1>
-          <div className="subtitle">{students.length} active members</div>
+          <div className="subtitle">{students.length} student{students.length !== 1 ? "s" : ""} &bull; {activeCount} active member{activeCount !== 1 ? "s" : ""}</div>
         </div>
       </div>
 

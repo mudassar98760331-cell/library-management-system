@@ -9,14 +9,15 @@ function Memberships() {
 
   useEffect(() => {
     adminAPI.getStudents()
-      .then((students) => { setMemberships(students.filter((s) => s.membership_status)); })
+      .then(setMemberships)
       .catch(() => toast.error("Failed to load memberships"))
       .finally(() => setLoading(false));
   }, [toast]);
 
   const active = memberships.filter((m) => m.membership_status === "active").length;
   const pending = memberships.filter((m) => m.membership_status === "pending").length;
-  const none = memberships.filter((m) => !m.membership_status).length;
+  const expired = memberships.filter((m) => m.membership_status === "expired").length;
+  const none = memberships.filter((m) => !m.membership_status || (m.membership_status !== "active" && m.membership_status !== "pending" && m.membership_status !== "expired")).length;
 
   if (loading) return <div className="empty-state"><div className="spinner" /><p>Loading...</p></div>;
 
@@ -46,7 +47,13 @@ function Memberships() {
         <div className="admin-stat-card">
           <div className="stat-card-header">
             <div className="stat-card-icon red">&#10060;</div>
-            <div><div className="stat-card-value">{none}</div><div className="stat-card-label">None</div></div>
+            <div><div className="stat-card-value">{expired}</div><div className="stat-card-label">Expired</div></div>
+          </div>
+        </div>
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-card-icon blue">&#128101;</div>
+            <div><div className="stat-card-value">{none}</div><div className="stat-card-label">No Membership</div></div>
           </div>
         </div>
       </div>

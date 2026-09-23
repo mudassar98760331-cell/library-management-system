@@ -52,51 +52,6 @@
   gap: 12px;
 }
 
-.nav-search {
-  position: relative;
-}
-
-.nav-search input {
-  padding: 7px 12px 7px 34px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--text-h);
-  font-size: 13px;
-  width: 220px;
-  transition: all 0.2s;
-}
-
-.nav-search input:focus {
-  border-color: var(--accent);
-  width: 280px;
-  box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-.nav-search-icon {
-  position: absolute;
-  left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-muted);
-  font-size: 13px;
-  pointer-events: none;
-}
-
-.nav-search-shortcut {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-sidebar);
-  pointer-events: none;
-}
-
 .nav-notif-btn {
   position: relative;
   background: none;
@@ -375,6 +330,11 @@
   color: var(--success);
 }
 
+.status-completed {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
 .status-pending,
 .badge.pending {
   background: var(--warning-bg);
@@ -390,6 +350,11 @@
 .badge.inactive {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.status-closed {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
 }
 
 /* ===== STATS ===== */
@@ -2186,10 +2151,6 @@ tr:hover td {
   }
 
   /* Navbar */
-  .nav-search {
-    display: none;
-  }
-
   .nav-avatar-info {
     display: none;
   }
@@ -3086,6 +3047,16 @@ tr:hover td {
 .status-badge.status-rejected {
   background: rgba(239, 68, 68, 0.15);
   color: var(--danger);
+}
+
+.status-badge.status-completed {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+}
+
+.status-badge.status-closed {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
 }
 
 /* Table card wrapper */

@@ -40,23 +40,32 @@ function LostFound() {
         <div className="table-container seats-table-card">
           <table>
             <thead>
-              <tr><th>Item</th><th>Reported By</th><th>Location</th><th>Type</th><th>Status</th><th>Date</th><th>Actions</th></tr>
+              <tr><th>Item</th><th>Reported By</th><th>Location</th><th>Status</th><th>Date</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {items.map((i) => (
                 <tr key={i.id}>
-                  <td data-label="Item">{i.item_name}</td>
+                  <td data-label="Item">
+                    <div>{i.item_name}</div>
+                    {i.description && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{i.description}</div>}
+                  </td>
                   <td data-label="Reported By">{i.reported_by || "Anonymous"}</td>
                   <td data-label="Location">{i.location || "\u2014"}</td>
-                  <td data-label="Type"><span className={`status-badge ${i.type === "lost" ? "status-pending" : "status-active"}`}>{i.type}</span></td>
-                  <td data-label="Status"><span className={`status-badge ${i.status === "found" ? "status-active" : i.status === "returned" ? "status-active" : "status-pending"}`}>{i.status}</span></td>
+                  <td data-label="Status">
+                    <span className={`status-badge ${i.status === "found" || i.status === "returned" ? "status-active" : i.status === "closed" ? "status-closed" : "status-pending"}`}>
+                      {i.status}
+                    </span>
+                  </td>
                   <td data-label="Date">{new Date(i.created_at).toLocaleDateString()}</td>
                   <td data-label="Actions" className="actions-cell">
-                    {i.status === "pending" && (
+                    {i.status === "lost" && (
                       <button className="btn btn-primary btn-sm" onClick={() => handleUpdate(i.id, "found")}>Mark Found</button>
                     )}
                     {i.status === "found" && (
                       <button className="btn btn-primary btn-sm" onClick={() => handleUpdate(i.id, "returned")}>Returned</button>
+                    )}
+                    {i.status === "returned" && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => handleUpdate(i.id, "closed")}>Close</button>
                     )}
                   </td>
                 </tr>

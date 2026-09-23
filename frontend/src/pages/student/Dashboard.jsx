@@ -101,10 +101,15 @@ function Dashboard() {
     );
   }
 
-  const { user, membership, expired_membership, booking, payment, unreadNotifications } = dashboard;
+  const { user, membership, booking, payment, unreadNotifications } = dashboard;
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 18 ? "Good Afternoon" : "Good Evening";
-  const isExpired = !membership && expired_membership;
+  // Status comes from the API (computed in SQL from end_date) — never derive it here
+  const isExpired = membership?.status === "expired";
+  const isPending = membership?.status === "pending";
+  const seatLabel = booking
+    ? `${booking.room_id ? `R${booking.room_id}` : booking.room_name || "Room"} - ${booking.seat_number}`
+    : "";
 
   const formatTime = (m) => {
     if (m == null) return "";
@@ -120,7 +125,9 @@ function Dashboard() {
         <div>
           <div className="label">Student Portal</div>
           <h1>{greeting}, {user?.name?.split(" ")[0] || "Student"} &#128075;</h1>
-          <div className="subtitle">{isExpired ? "Your membership has expired. Renew to continue." : "Stay consistent, keep going!"}</div>
+          <div className="subtitle">
+            {isExpired ? "Your membership has expired. Renew to continue." : isPending ? "Your payment is under review by the admin." : "Stay consistent, keep going!"}
+          </div>
         </div>
       </div>
 
@@ -140,7 +147,7 @@ function Dashboard() {
           <div>
             <div style={{ fontWeight: 700, color: "#f59e0b", fontSize: 15 }}>&#9888; Membership Expired</div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-              Your {expired_membership.plan_name} membership expired on {new Date(expired_membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}.
+              Your {membership.plan_name} membership expired on {new Date(membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}.
               {booking?.seat_number && ` Your seat ${booking.seat_number} has been released.`}
             </div>
           </div>
@@ -155,15 +162,27 @@ function Dashboard() {
           <div className="card-icon">&#128203;</div>
           <h3>Membership Status</h3>
           {membership ? (
-            <>
-              <div className="status-badge status-active">&#9989; Active</div>
-              {membership.end_date && <p>Valid till {new Date(membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>}
-            </>
-          ) : expired_membership ? (
-            <>
-              <div className="status-badge status-expired">&#10060; Expired</div>
-              <p>Expired on {new Date(expired_membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>
-            </>
+            membership.status === "active" ? (
+              <>
+                <div className="status-badge status-active">&#9989; Active</div>
+                {membership.end_date && <p>Valid till {new Date(membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>}
+              </>
+            ) : membership.status === "pending" ? (
+              <>
+                <div className="status-badge status-pending">&#9203; Awaiting Verification</div>
+                <p>Payment under review</p>
+              </>
+            ) : membership.status === "expired" ? (
+              <>
+                <div className="status-badge status-expired">&#10060; Expired</div>
+                <p>Expired on {new Date(membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>
+              </>
+            ) : (
+              <>
+                <div className="status-badge status-expired">&#10060; {membership.status.charAt(0).toUpperCase() + membership.status.slice(1)}</div>
+                <p><Link to="/student/membership" style={{ color: "var(--accent)" }}>Renew membership</Link></p>
+              </>
+            )
           ) : (
             <>
               <div className="status-badge status-expired">No Membership</div>
@@ -177,7 +196,10 @@ function Dashboard() {
           <h3>Assigned Seat</h3>
           {booking ? (
             <>
-              <div className="status-badge status-active">R1 - {booking.seat_number}</div>
+              <div className={`status-badge ${booking.status === "pending" ? "status-pending" : "status-active"}`}>
+                {seatLabel}
+                {booking.status === "pending" && " (Pending)"}
+              </div>
               {booking.room_name && <p>{booking.room_name}</p>}
               {booking.booking_source && (
                 <p style={{ fontSize: 12, marginTop: 4 }}>
@@ -235,8 +257,10 @@ function Dashboard() {
         <div className="dashboard-card">
           <div className="card-icon">&#128202;</div>
           <h3>Membership Plan</h3>
-          <div className={`status-badge ${membership?.plan_name ? "status-active" : "status-expired"}`}>
-            {membership?.plan_name || (expired_membership?.plan_name ? `${expired_membership.plan_name} (Expired)` : "No Plan")}
+          <div className={`status-badge ${membership?.status === "active" ? "status-active" : membership?.status === "pending" ? "status-pending" : "status-expired"}`}>
+            {membership?.plan_name
+              ? (membership.status === "expired" ? `${membership.plan_name} (Expired)` : membership.plan_name)
+              : "No Plan"}
           </div>
           {membership?.plan_price && <p>&#8377;{membership.plan_price}</p>}
         </div>
@@ -259,27 +283,24 @@ function Dashboard() {
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span style={{ color: 'var(--accent)' }}>&#128186;</span>
-                  <span style={{ fontSize: 13 }}>Seat assigned (R1 - {booking.seat_number})</span>
+                  <span style={{ fontSize: 13 }}>
+                    {booking.status === "pending" ? "Seat reserved (awaiting verification)" : `Seat assigned (${seatLabel})`}
+                  </span>
                 </div>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Today</span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{booking.booked_at ? new Date(booking.booked_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "Today"}</span>
               </div>
             )}
             {membership && (
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ color: 'var(--success)' }}>&#10003;</span>
-                  <span style={{ fontSize: 13 }}>Membership activated</span>
+                  <span style={{ color: membership.status === "active" ? 'var(--success)' : membership.status === "pending" ? 'var(--warning, #f59e0b)' : '#f59e0b' }}>
+                    {membership.status === "active" ? "\u2713" : "\u26A0"}
+                  </span>
+                  <span style={{ fontSize: 13 }}>
+                    Membership {membership.status === "active" ? "activated" : membership.status === "pending" ? "pending verification" : membership.status}
+                  </span>
                 </div>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{membership.created_at ? new Date(membership.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "\u2014"}</span>
-              </div>
-            )}
-            {expired_membership && !membership && (
-              <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ color: '#f59e0b' }}>&#9888;</span>
-                  <span style={{ fontSize: 13 }}>Membership expired</span>
-                </div>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{new Date(expired_membership.end_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
               </div>
             )}
             <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

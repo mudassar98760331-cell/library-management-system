@@ -4,58 +4,47 @@ import pool from "../config/db.js";
 
 export async function getDashboard(_req, res) {
   try {
-    const { rows: students } = await pool.query(
-      `SELECT COUNT(DISTINCT u.id) FROM users u
-       JOIN memberships m ON m.user_id = u.id
-       WHERE u.role = 'student' AND m.status = 'active' AND m.end_date >= CURRENT_DATE`
-    );
-    const { rows: totalSeats } = await pool.query("SELECT COUNT(*) FROM seats");
-    const { rows: availableSeats } = await pool.query(
-      "SELECT COUNT(*) FROM seats WHERE status = 'available'"
-    );
-    const { rows: bookedSeats } = await pool.query(
-      "SELECT COUNT(*) FROM seats WHERE status = 'booked'"
-    );
-    const { rows: disabledSeats } = await pool.query(
-      "SELECT COUNT(*) FROM seats WHERE status = 'disabled'"
-    );
-    const { rows: activeMemberships } = await pool.query(
-      "SELECT COUNT(*) FROM memberships WHERE status = 'active' AND end_date >= CURRENT_DATE"
-    );
-    const { rows: pendingPayments } = await pool.query(
-      "SELECT COUNT(*) FROM payments WHERE status = 'pending'"
-    );
-    const { rows: revenue } = await pool.query(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed'"
-    );
-    const { rows: cashCollection } = await pool.query(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE payment_type = 'offline_cash' AND status = 'completed'"
-    );
-    const { rows: upiCollection } = await pool.query(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE payment_type IN ('online', 'offline_upi') AND status = 'completed'"
-    );
-
-    const { rows: recentPayments } = await pool.query(
-      `SELECT p.id, p.amount, p.status, p.utr_number, p.created_at,
-              u.name as user_name
-       FROM payments p
-       JOIN users u ON p.user_id = u.id
-       ORDER BY p.created_at DESC
-       LIMIT 5`
-    );
+    const [
+      students, totalSeats, availableSeats, bookedSeats, disabledSeats,
+      activeMemberships, pendingPayments, revenue, cashCollection, upiCollection, recentPayments,
+    ] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(DISTINCT u.id) FROM users u
+         JOIN memberships m ON m.user_id = u.id
+         WHERE u.role = 'student' AND m.status = 'active' AND m.end_date >= CURRENT_DATE`
+      ),
+      pool.query("SELECT COUNT(*) FROM seats"),
+      pool.query("SELECT COUNT(*) FROM seats WHERE status = 'available'"),
+      pool.query("SELECT COUNT(*) FROM seats WHERE status = 'booked'"),
+      pool.query("SELECT COUNT(*) FROM seats WHERE status = 'disabled'"),
+      pool.query("SELECT COUNT(*) FROM memberships WHERE status = 'active' AND end_date >= CURRENT_DATE"),
+      pool.query("SELECT COUNT(*) FROM payments WHERE status = 'pending'"),
+      pool.query("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed'"),
+      pool.query("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE payment_type = 'offline_cash' AND status = 'completed'"),
+      pool.query("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE payment_type IN ('online', 'offline_upi') AND status = 'completed'"),
+      pool.query(
+        `SELECT p.id, p.amount, p.status, p.utr_number, p.created_at, p.payment_type,
+                u.name as user_name, u.phone as user_phone,
+                (p.screenshot_data IS NOT NULL OR p.screenshot_url <> '') AS has_screenshot
+         FROM payments p
+         JOIN users u ON p.user_id = u.id
+         ORDER BY p.created_at DESC
+         LIMIT 5`
+      ),
+    ]);
 
     res.json({
-      totalStudents: parseInt(students[0].count),
-      totalSeats: parseInt(totalSeats[0].count),
-      availableSeats: parseInt(availableSeats[0].count),
-      bookedSeats: parseInt(bookedSeats[0].count),
-      disabledSeats: parseInt(disabledSeats[0].count),
-      activeMemberships: parseInt(activeMemberships[0].count),
-      pendingPayments: parseInt(pendingPayments[0].count),
-      totalRevenue: parseInt(revenue[0].total),
-      cashCollection: parseInt(cashCollection[0].total),
-      upiCollection: parseInt(upiCollection[0].total),
-      recentPayments,
+      totalStudents: parseInt(students.rows[0].count),
+      totalSeats: parseInt(totalSeats.rows[0].count),
+      availableSeats: parseInt(availableSeats.rows[0].count),
+      bookedSeats: parseInt(bookedSeats.rows[0].count),
+      disabledSeats: parseInt(disabledSeats.rows[0].count),
+      activeMemberships: parseInt(activeMemberships.rows[0].count),
+      pendingPayments: parseInt(pendingPayments.rows[0].count),
+      totalRevenue: parseInt(revenue.rows[0].total),
+      cashCollection: parseInt(cashCollection.rows[0].total),
+      upiCollection: parseInt(upiCollection.rows[0].total),
+      recentPayments: recentPayments.rows,
     });
   } catch (err) {
     console.error(err);
@@ -65,38 +54,49 @@ export async function getDashboard(_req, res) {
 
 export async function getStudents(_req, res) {
   try {
+    // Returns ALL students (not only those with an active membership).
+    // Membership status is computed from the DB date (end_date < CURRENT_DATE => expired),
+    // so the UI can never show "Expired" for a future expiry or "Active" for a past one.
+    // Booking prefers active > pending > latest; payment is the student's latest payment.
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.created_at, u.is_active,
-        latest_m.status as membership_status, latest_m.plan_name, latest_m.membership_expiry,
+        lm.status as membership_status, lm.plan_name, lm.membership_expiry, lm.membership_id,
         s.seat_number as current_seat, s.id as seat_id, r.name as current_room,
         b.id as booking_id, b.booking_source, b.status as booking_status,
         b.booked_at, b.booking_start, b.booking_end,
-        latest_p.status as payment_status
+        lp.status as payment_status, lp.has_screenshot, lp.utr_number
        FROM users u
-       JOIN LATERAL (
-         SELECT m.status, fp.name as plan_name, m.end_date as membership_expiry
+       LEFT JOIN LATERAL (
+         SELECT CASE
+                  WHEN m.end_date IS NOT NULL AND m.end_date < CURRENT_DATE THEN 'expired'
+                  ELSE m.status
+                END as status,
+                fp.name as plan_name, m.end_date as membership_expiry, m.id as membership_id
          FROM memberships m
          LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
-         WHERE m.user_id = u.id AND m.status = 'active' AND m.end_date >= CURRENT_DATE
-         ORDER BY m.created_at DESC
+         WHERE m.user_id = u.id
+         ORDER BY (m.status = 'active' AND (m.end_date IS NULL OR m.end_date >= CURRENT_DATE)) DESC,
+                  (m.status = 'pending' AND (m.end_date IS NULL OR m.end_date >= CURRENT_DATE)) DESC,
+                  m.created_at DESC, m.id DESC
          LIMIT 1
-       ) latest_m ON true
+       ) lm ON true
        LEFT JOIN LATERAL (
          SELECT b2.*
          FROM bookings b2
          WHERE b2.user_id = u.id
-         ORDER BY (b2.status = 'active') DESC, b2.booked_at DESC
+         ORDER BY (b2.status = 'active') DESC, (b2.status = 'pending') DESC, b2.booked_at DESC, b2.id DESC
          LIMIT 1
        ) b ON true
        LEFT JOIN seats s ON b.seat_id = s.id
        LEFT JOIN rooms r ON s.room_id = r.id
        LEFT JOIN LATERAL (
-         SELECT p.status
+         SELECT p.status, p.utr_number,
+                (p.screenshot_data IS NOT NULL OR p.screenshot_url <> '') as has_screenshot
          FROM payments p
          WHERE p.user_id = u.id
-         ORDER BY p.created_at DESC
+         ORDER BY p.created_at DESC, p.id DESC
          LIMIT 1
-       ) latest_p ON true
+       ) lp ON true
        WHERE u.role = 'student'
        ORDER BY u.created_at DESC`
     );
@@ -113,31 +113,44 @@ export async function getSeats(_req, res) {
       `SELECT s.id, s.seat_number, s.room_id, r.name as room_name,
               CASE
                 WHEN s.status = 'disabled' THEN 'disabled'
-                WHEN s.status = 'reserved' THEN 'reserved'
                 WHEN EXISTS (
                   SELECT 1 FROM bookings b
                   JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
                   WHERE b.seat_id = s.id AND b.status = 'active'
                     AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE
                 ) THEN 'booked'
+                WHEN EXISTS (
+                  SELECT 1 FROM bookings pb WHERE pb.seat_id = s.id AND pb.status = 'pending'
+                ) THEN 'reserved'
+                WHEN s.status = 'reserved' THEN 'reserved'
                 ELSE 'available'
               END as status,
               sl.position, sl.sort_order,
               u.name as occupied_by, b.user_id as booked_by,
-              b.id as booking_id, b.booking_source,
+              b.id as booking_id, b.booking_source, b.status as booking_status,
               fp.name as fee_plan_name, fp.start_minute, fp.end_minute, fp.is_24_hour,
               b.booking_start, b.booking_end,
               p.amount as payment_amount, p.payment_mode, p.status as payment_status, p.payment_type
        FROM seats s
        JOIN rooms r ON s.room_id = r.id
        LEFT JOIN seat_layouts sl ON s.id = sl.seat_id
-       LEFT JOIN bookings b ON s.id = b.seat_id AND b.status = 'active'
+       LEFT JOIN LATERAL (
+         SELECT b2.* FROM bookings b2
+         WHERE b2.seat_id = s.id AND b2.status IN ('active', 'pending')
+         ORDER BY (b2.status = 'active') DESC, b2.booked_at DESC, b2.id DESC
+         LIMIT 1
+       ) b ON true
        LEFT JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
          AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE
        LEFT JOIN users u ON b.user_id = u.id
        LEFT JOIN fee_plans fp ON b.fee_plan_id = fp.id
-       LEFT JOIN payments p ON b.user_id = p.user_id AND b.fee_plan_id = p.membership_id
-         AND p.status = 'completed'
+       LEFT JOIN LATERAL (
+         SELECT p2.amount, p2.payment_mode, p2.status, p2.payment_type
+         FROM payments p2
+         WHERE p2.membership_id = m.id
+         ORDER BY p2.created_at DESC, p2.id DESC
+         LIMIT 1
+       ) p ON true
        ORDER BY r.name, sl.sort_order, s.seat_number`
     );
     res.json(rows);
@@ -168,9 +181,9 @@ export async function updateSeatStatus(req, res) {
       return res.status(404).json({ error: "Seat not found" });
     }
 
-    if (status === "disabled") {
+    if (status === "disabled" || status === "available") {
       await client.query(
-        "UPDATE bookings SET status = 'cancelled' WHERE seat_id = $1 AND status = 'active'",
+        "UPDATE bookings SET status = 'cancelled' WHERE seat_id = $1 AND status IN ('active', 'pending')",
         [id]
       );
     }
@@ -202,16 +215,54 @@ export async function updateSeatStatus(req, res) {
 export async function getPayments(_req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT p.*, u.name as user_name, u.email as user_email,
-        fp.name as plan_name, b.booking_source
+      `SELECT p.id, p.user_id, p.membership_id, p.amount, p.method, p.payment_type,
+              p.utr_number, p.status, p.admin_note, p.payment_date, p.payment_mode,
+              p.amount_paid, p.created_at, p.receipt_number,
+              (p.screenshot_data IS NOT NULL OR p.screenshot_url <> '') AS has_screenshot,
+              u.name as user_name, u.email as user_email, u.phone as user_phone,
+              fp.name as plan_name, bs.booking_source
        FROM payments p
        JOIN users u ON p.user_id = u.id
        LEFT JOIN memberships m ON p.membership_id = m.id
        LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
-       LEFT JOIN bookings b ON m.user_id = b.user_id AND m.fee_plan_id = b.fee_plan_id AND b.status = 'active'
+       LEFT JOIN LATERAL (
+         SELECT b.booking_source FROM bookings b
+         WHERE b.user_id = p.user_id AND b.fee_plan_id = m.fee_plan_id
+         ORDER BY (b.status = 'active') DESC, (b.status = 'pending') DESC, b.booked_at DESC
+         LIMIT 1
+       ) bs ON true
        ORDER BY p.created_at DESC`
     );
     res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+export async function getPaymentScreenshot(req, res) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.screenshot_data, p.screenshot_mime_type, p.screenshot_url, u.email
+       FROM payments p
+       JOIN users u ON p.user_id = u.id
+       WHERE p.id = $1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+    const payment = rows[0];
+    if (payment.screenshot_data) {
+      res.set("Content-Type", payment.screenshot_mime_type || "image/jpeg");
+      res.set("Cache-Control", "private, max-age=300");
+      return res.send(payment.screenshot_data);
+    }
+    if (payment.screenshot_url) {
+      // Legacy disk-based screenshot (pre-BYTEA migration)
+      return res.redirect(payment.screenshot_url);
+    }
+    return res.status(404).json({ error: "No screenshot uploaded for this payment" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -249,6 +300,20 @@ export async function approvePayment(req, res) {
       "UPDATE memberships SET status = 'active' WHERE id = $1",
       [payment.membership_id]
     );
+
+    // Activate the held booking(s) created by submitPayment and mark seats booked
+    const { rows: pendingBookings } = await client.query(
+      `UPDATE bookings SET status = 'active'
+       WHERE user_id = $1 AND status = 'pending'
+       RETURNING seat_id`,
+      [payment.user_id]
+    );
+    for (const pb of pendingBookings) {
+      await client.query(
+        "UPDATE seats SET status = 'booked' WHERE id = $1 AND status = 'reserved'",
+        [pb.seat_id]
+      );
+    }
 
     await client.query(
       "INSERT INTO notifications (user_id, title, message) VALUES ($1, $2, $3)",
@@ -303,7 +368,7 @@ export async function rejectPayment(req, res) {
       [paymentRows[0].membership_id]
     );
 
-    // Cancel any active bookings associated with this membership's user and fee plan
+    // Cancel any active or pending bookings associated with this membership's user and fee plan
     if (paymentRows[0].membership_id) {
       const { rows: memRows } = await client.query(
         "SELECT fee_plan_id FROM memberships WHERE id = $1",
@@ -312,13 +377,13 @@ export async function rejectPayment(req, res) {
       if (memRows.length > 0) {
         const { rows: cancelled } = await client.query(
           `UPDATE bookings SET status = 'cancelled'
-           WHERE user_id = $1 AND fee_plan_id = $2 AND status = 'active'
+           WHERE user_id = $1 AND fee_plan_id = $2 AND status IN ('active', 'pending')
            RETURNING id, seat_id`,
           [paymentRows[0].user_id, memRows[0].fee_plan_id]
         );
         for (const cb of cancelled) {
           const { rows: remaining } = await client.query(
-            "SELECT id FROM bookings WHERE seat_id = $1 AND status = 'active' AND id != $2",
+            "SELECT id FROM bookings WHERE seat_id = $1 AND status IN ('active', 'pending') AND id != $2",
             [cb.seat_id, cb.id]
           );
           if (remaining.length === 0) {
@@ -441,7 +506,7 @@ export async function createOfflineBooking(req, res) {
       `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
        FROM bookings b
        JOIN fee_plans fp ON b.fee_plan_id = fp.id
-       WHERE b.seat_id = $1 AND b.status = 'active'`,
+       WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')`,
       [seat_id]
     );
 
@@ -551,7 +616,7 @@ export async function cancelBooking(req, res) {
     }
 
     const booking = rows[0];
-    if (booking.status !== "active") {
+    if (!["active", "pending"].includes(booking.status)) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Booking is not active" });
     }
@@ -559,7 +624,7 @@ export async function cancelBooking(req, res) {
     await client.query("UPDATE bookings SET status = 'cancelled' WHERE id = $1", [id]);
 
     const { rows: remaining } = await client.query(
-      "SELECT id FROM bookings WHERE seat_id = $1 AND status = 'active' AND id != $2",
+      "SELECT id FROM bookings WHERE seat_id = $1 AND status IN ('active', 'pending') AND id != $2",
       [booking.seat_id, id]
     );
 
@@ -590,12 +655,10 @@ export async function getAvailableSeats(_req, res) {
       `SELECT s.id, s.seat_number, s.status, r.name as room_name
        FROM seats s
        JOIN rooms r ON s.room_id = r.id
-       WHERE s.status != 'disabled'
+       WHERE s.status = 'available'
          AND NOT EXISTS (
            SELECT 1 FROM bookings b
-           JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
-           WHERE b.seat_id = s.id AND b.status = 'active'
-             AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE
+           WHERE b.seat_id = s.id AND b.status IN ('active', 'pending')
          )
        ORDER BY r.name, s.seat_number`
     );
@@ -638,11 +701,11 @@ export async function assignSeat(req, res) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Seat is disabled" });
     }
-    // Check if seat has active bookings with non-expired memberships
+    // Check if seat has active or pending bookings with non-expired memberships
     const { rows: seatActiveBookings } = await client.query(
       `SELECT 1 FROM bookings b
        JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
-       WHERE b.seat_id = $1 AND b.status = 'active'
+       WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')
          AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE`,
       [seat_id]
     );
@@ -654,7 +717,7 @@ export async function assignSeat(req, res) {
     // Cancel any expired bookings for this student and release their seats
     const { rows: expiredBookings } = await client.query(
       `UPDATE bookings SET status = 'cancelled'
-       WHERE user_id = $1 AND status = 'active'
+       WHERE user_id = $1 AND status IN ('active', 'pending')
          AND (booking_end < CURRENT_DATE
            OR NOT EXISTS (
              SELECT 1 FROM memberships m
@@ -666,7 +729,7 @@ export async function assignSeat(req, res) {
     );
     for (const eb of expiredBookings) {
       const { rows: remaining } = await client.query(
-        "SELECT id FROM bookings WHERE seat_id = $1 AND status = 'active' AND id != $2",
+        "SELECT id FROM bookings WHERE seat_id = $1 AND status IN ('active', 'pending') AND id != $2",
         [eb.seat_id, eb.id]
       );
       if (remaining.length === 0) {
@@ -675,7 +738,7 @@ export async function assignSeat(req, res) {
     }
 
     const { rows: existingBooking } = await client.query(
-      "SELECT b.*, s.seat_number FROM bookings b JOIN seats s ON b.seat_id = s.id WHERE b.user_id = $1 AND b.status = 'active'",
+      "SELECT b.*, s.seat_number FROM bookings b JOIN seats s ON b.seat_id = s.id WHERE b.user_id = $1 AND b.status IN ('active', 'pending')",
       [student_id]
     );
 
@@ -699,7 +762,7 @@ export async function assignSeat(req, res) {
       );
 
       const { rows: remaining } = await client.query(
-        "SELECT id FROM bookings WHERE seat_id = $1 AND status = 'active' AND id != $2",
+        "SELECT id FROM bookings WHERE seat_id = $1 AND status IN ('active', 'pending') AND id != $2",
         [oldSeatId, bookingId]
       );
       if (remaining.length === 0) {
@@ -720,7 +783,7 @@ export async function assignSeat(req, res) {
         `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
          FROM bookings b
          JOIN fee_plans fp ON b.fee_plan_id = fp.id
-         WHERE b.seat_id = $1 AND b.status = 'active'`,
+         WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')`,
         [seat_id]
       );
 
@@ -1026,11 +1089,25 @@ export async function getLostFound(_req, res) {
 export async function updateLostFound(req, res) {
   try {
     const { status } = req.body;
-    if (!status || !["lost", "found", "returned"].includes(status)) {
+    if (!status || !["lost", "found", "returned", "closed"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
-    await pool.query("UPDATE lost_found SET status = $1 WHERE id = $2", [status, req.params.id]);
-    res.json({ message: "Item status updated" });
+    const { rows: before } = await pool.query("SELECT status FROM lost_found WHERE id = $1", [req.params.id]);
+    if (before.length === 0) {
+      return res.status(404).json({ error: "Item not found" });
+    }
+    const { rows } = await pool.query(
+      "UPDATE lost_found SET status = $1 WHERE id = $2 RETURNING *",
+      [status, req.params.id]
+    );
+    if (before[0].status !== status) {
+      const label = { found: "marked as found", returned: "marked as returned", closed: "closed", lost: "marked as lost" }[status];
+      await pool.query(
+        "INSERT INTO notifications (user_id, title, message) VALUES ($1, $2, $3)",
+        [rows[0].user_id, "Lost & Found Update", `Your item "${rows[0].item_name}" was ${label}.`]
+      );
+    }
+    res.json(rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -1113,7 +1190,7 @@ export async function renewMembership(req, res) {
         `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
          FROM bookings b
          JOIN fee_plans fp ON b.fee_plan_id = fp.id
-         WHERE b.seat_id = $1 AND b.status = 'active'`,
+         WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')`,
         [prevSeat.seat_id]
       );
 
@@ -1192,6 +1269,90 @@ export async function renewMembership(req, res) {
     res.status(500).json({ error: "Server error" });
   } finally {
     client.release();
+  }
+}
+
+// --- Help Desk (admin side) ---
+
+export async function getHelpRequests(_req, res) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT h.id, h.user_id, h.subject, h.message, h.status, h.admin_reply,
+              h.replied_at, h.created_at, u.name as student_name, u.email as student_email
+       FROM help_requests h
+       JOIN users u ON h.user_id = u.id
+       ORDER BY CASE WHEN h.status = 'pending' THEN 0 ELSE 1 END, h.created_at DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+export async function updateHelpRequest(req, res) {
+  try {
+    const { id } = req.params;
+    const { reply, status } = req.body;
+
+    if (status && !["pending", "in_progress", "resolved"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status. Must be 'pending', 'in_progress', or 'resolved'." });
+    }
+
+    // Read previous state so we can avoid duplicate notifications on re-save
+    const { rows: beforeRows } = await pool.query(
+      "SELECT user_id, subject, admin_reply FROM help_requests WHERE id = $1",
+      [id]
+    );
+    if (beforeRows.length === 0) {
+      return res.status(404).json({ error: "Help request not found" });
+    }
+    const before = beforeRows[0];
+
+    const updates = [];
+    const values = [];
+    let replyChanged = false;
+    if (reply !== undefined && reply !== null) {
+      replyChanged = String(reply).trim() !== (before.admin_reply || "").trim();
+      values.push(String(reply));
+      updates.push(`admin_reply = $${values.length}`);
+      values.push("NOW()");
+      updates.push(`replied_at = $${values.length}`);
+      if (!status) {
+        values.push("in_progress");
+        updates.push(`status = $${values.length}`);
+      }
+    }
+    if (status) {
+      values.push(status);
+      updates.push(`status = $${values.length}`);
+    }
+    if (updates.length === 0) {
+      return res.status(400).json({ error: "Nothing to update. Provide reply and/or status." });
+    }
+
+    values.push(id);
+    const { rows } = await pool.query(
+      `UPDATE help_requests SET ${updates.join(", ")} WHERE id = $${values.length} RETURNING *`,
+      values
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Help request not found" });
+    }
+
+    // Notify only when the reply text is new or actually changed
+    // (editing the same reply or only flipping status must not re-notify)
+    if (replyChanged && String(reply).trim()) {
+      await pool.query(
+        "INSERT INTO notifications (user_id, title, message) VALUES ($1, $2, $3)",
+        [before.user_id, "Help Request Reply", `Admin replied to your help request "${before.subject}".`]
+      );
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 }
 

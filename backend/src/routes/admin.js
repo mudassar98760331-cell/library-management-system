@@ -25,6 +25,9 @@ import {
   updateLostFound,
   getReports,
   renewMembership,
+  getPaymentScreenshot,
+  getHelpRequests,
+  updateHelpRequest,
 } from "../controllers/adminController.js";
 
 const router = Router();
@@ -36,6 +39,7 @@ router.get("/students", getStudents);
 router.get("/seats", getSeats);
 router.put("/seats/:id/status", updateSeatStatus);
 router.get("/payments", getPayments);
+router.get("/payments/:id/screenshot", getPaymentScreenshot);
 router.put("/payments/:id/approve", approvePayment);
 router.put("/payments/:id/reject", rejectPayment);
 router.post("/offline-booking", createOfflineBooking);
@@ -52,6 +56,8 @@ router.post("/notifications", sendNotification);
 router.get("/notifications", getNotifications);
 router.get("/lost-found", getLostFound);
 router.put("/lost-found/:id", updateLostFound);
+router.get("/help", getHelpRequests);
+router.put("/help/:id", updateHelpRequest);
 router.get("/reports", getReports);
 router.post("/renew-membership", renewMembership);
 

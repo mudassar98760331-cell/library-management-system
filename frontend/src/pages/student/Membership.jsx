@@ -104,7 +104,7 @@ function Membership() {
                 <span className="plan-icon">{meta.icon}</span>
               </div>
               <h3>{plan.name}</h3>
-              <div className="price">&#8377;{plan.price}<span>/ month</span></div>
+              <div className="price">&#8377;{plan.price}<span>/ 1 Month</span></div>
               <p className="plan-desc">{meta.desc}</p>
               <div className="plan-timing">
                 {plan.is_24_hour ? "24 Hours Access" : `${formatTime(plan.start_minute)} \u2013 ${formatTime(plan.end_minute)}`}
@@ -118,7 +118,7 @@ function Membership() {
         <div className="summary-card">
           <h3>Selected Plan</h3>
           <div className="summary-item"><span>Plan</span><span>{selectedPlan.name}</span></div>
-          <div className="summary-item"><span>Price</span><span>&#8377;{selectedPlan.price}/month</span></div>
+          <div className="summary-item"><span>Price</span><span>&#8377;{selectedPlan.price} / 1 Month</span></div>
           <div className="summary-item">
             <span>Timing</span>
             <span>{selectedPlan.is_24_hour ? "24 Hours Access" : `${formatTime(selectedPlan.start_minute)} \u2013 ${formatTime(selectedPlan.end_minute)}`}</span>

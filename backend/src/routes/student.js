@@ -11,6 +11,7 @@ import {
   cancelBooking,
   getPaymentHistory,
   uploadScreenshot as uploadScreenshotHandler,
+  submitPayment,
   getProfile,
   updateProfile,
   getNotifications,
@@ -18,6 +19,8 @@ import {
   submitLostFound,
   getLostFound,
   changePassword,
+  submitHelpRequest,
+  getMyHelpRequests,
 } from "../controllers/studentController.js";
 
 const router = Router();
@@ -27,6 +30,7 @@ router.use(authenticate);
 router.get("/dashboard", getDashboard);
 router.get("/fee-plans", getFeePlans);
 router.post("/membership", purchaseMembership);
+router.post("/payment", uploadScreenshot, submitPayment);
 router.get("/seats", getSeats);
 router.post("/book-seat", bookSeat);
 router.delete("/booking/:booking_id", cancelBooking);
@@ -39,5 +43,7 @@ router.get("/notifications", getNotifications);
 router.put("/notifications/:id/read", markNotificationRead);
 router.post("/lost-found", submitLostFound);
 router.get("/lost-found", getLostFound);
+router.post("/help", submitHelpRequest);
+router.get("/help", getMyHelpRequests);
 
 export default router;

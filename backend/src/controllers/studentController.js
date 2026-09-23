@@ -5,57 +5,66 @@ export async function getDashboard(req, res) {
   try {
     const userId = req.user.id;
 
-    const { rows: user } = await pool.query(
-      "SELECT id, name, email, phone FROM users WHERE id = $1",
-      [userId]
-    );
+    const [userRes, membershipRes, bookingRes, paymentRes, notifRes] = await Promise.all([
+      pool.query("SELECT id, name, email, phone, created_at FROM users WHERE id = $1", [userId]),
+      // Membership status is computed in SQL (single source of truth, date-only):
+      // end_date in the past => 'expired', regardless of stored status.
+      pool.query(
+        `SELECT m.id, m.user_id, m.fee_plan_id, m.status AS stored_status, m.start_date, m.end_date, m.created_at,
+                CASE
+                  WHEN m.end_date IS NOT NULL AND m.end_date < CURRENT_DATE THEN 'expired'
+                  ELSE m.status
+                END AS status,
+                fp.name AS plan_name
+         FROM memberships m
+         JOIN fee_plans fp ON m.fee_plan_id = fp.id
+         WHERE m.user_id = $1
+         ORDER BY m.created_at DESC, m.id DESC
+         LIMIT 1`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT b.id, b.user_id, b.seat_id, b.fee_plan_id, b.booking_start, b.booking_end,
+                b.status, b.booking_source, b.booked_at,
+                s.seat_number, r.id AS room_id, r.name AS room_name,
+                fp.name AS plan_name, fp.start_minute, fp.end_minute, fp.is_24_hour
+         FROM bookings b
+         JOIN seats s ON b.seat_id = s.id
+         JOIN rooms r ON s.room_id = r.id
+         LEFT JOIN fee_plans fp ON b.fee_plan_id = fp.id
+         WHERE b.user_id = $1 AND b.status IN ('active', 'pending')
+         ORDER BY (b.status = 'active') DESC, b.booked_at DESC
+         LIMIT 1`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT p.id, p.user_id, p.membership_id, p.amount, p.method, p.payment_type,
+                p.utr_number, p.status, p.admin_note, p.payment_date, p.payment_mode,
+                p.amount_paid, p.created_at,
+                (p.screenshot_data IS NOT NULL) AS has_screenshot,
+                fp.name AS plan_name
+         FROM payments p
+         LEFT JOIN memberships m ON p.membership_id = m.id
+         LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
+         WHERE p.user_id = $1
+         ORDER BY p.created_at DESC
+         LIMIT 1`,
+        [userId]
+      ),
+      pool.query(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = false",
+        [userId]
+      ),
+    ]);
 
-    const { rows: memberships } = await pool.query(
-      `SELECT m.*, fp.name as plan_name
-       FROM memberships m
-       JOIN fee_plans fp ON m.fee_plan_id = fp.id
-       WHERE m.user_id = $1
-       ORDER BY m.created_at DESC LIMIT 1`,
-      [userId]
-    );
-
-    const { rows: bookings } = await pool.query(
-      `SELECT b.*, s.seat_number, r.name as room_name,
-              fp.name as plan_name, fp.start_minute, fp.end_minute, fp.is_24_hour
-       FROM bookings b
-       JOIN seats s ON b.seat_id = s.id
-       JOIN rooms r ON s.room_id = r.id
-       LEFT JOIN fee_plans fp ON b.fee_plan_id = fp.id
-       WHERE b.user_id = $1 AND b.status = 'active'
-       ORDER BY b.booked_at DESC LIMIT 1`,
-      [userId]
-    );
-
-    const { rows: payments } = await pool.query(
-      `SELECT p.*, fp.name as plan_name
-       FROM payments p
-       LEFT JOIN memberships m ON p.membership_id = m.id
-       LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
-       WHERE p.user_id = $1
-       ORDER BY p.created_at DESC LIMIT 1`,
-      [userId]
-    );
-
-    const { rows: notifications } = await pool.query(
-      "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = false",
-      [userId]
-    );
-
-    const membership = memberships[0] || null;
-    const isActive = membership && membership.status === 'active' && new Date(membership.end_date) >= new Date();
+    const membership = membershipRes.rows[0] || null;
 
     res.json({
-      user: user[0],
-      membership: isActive ? membership : null,
-      expired_membership: !isActive && membership ? membership : null,
-      booking: bookings[0] || null,
-      payment: payments[0] || null,
-      unreadNotifications: parseInt(notifications[0].count),
+      user: userRes.rows[0],
+      membership,
+      booking: bookingRes.rows[0] || null,
+      payment: paymentRes.rows[0] || null,
+      unreadNotifications: parseInt(notifRes.rows[0].count),
     });
   } catch (err) {
     console.error(err);
@@ -78,7 +87,7 @@ export async function getFeePlans(req, res) {
 export async function purchaseMembership(req, res) {
   try {
     const userId = req.user.id;
-    const { fee_plan_id } = req.body;
+    const { fee_plan_id, utr_number } = req.body;
 
     if (!fee_plan_id) {
       return res.status(400).json({ error: "Fee plan ID is required" });
@@ -111,9 +120,10 @@ export async function purchaseMembership(req, res) {
     );
 
     const { rows: paymentRows } = await pool.query(
-      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type)
-       VALUES ($1, $2, $3, 'upi', 'pending', 'online') RETURNING *`,
-      [userId, membershipRows[0].id, planRows[0].price]
+      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type, utr_number)
+       VALUES ($1, $2, $3, 'upi', 'pending', 'online', $4) RETURNING id, user_id, membership_id, amount, method,
+              payment_type, utr_number, status, admin_note, payment_date, payment_mode, amount_paid, created_at`,
+      [userId, membershipRows[0].id, planRows[0].price, utr_number ? String(utr_number).trim().slice(0, 100) : ""]
     );
 
     res.status(201).json({
@@ -127,19 +137,162 @@ export async function purchaseMembership(req, res) {
   }
 }
 
+// Atomic online payment submission:
+// membership (pending) + payment (pending, UTR + screenshot BYTEA) + booking (pending)
+// are created in ONE transaction so a partial failure can never leave inconsistent state.
+// Booking becomes 'active' only when the admin approves the payment (see approvePayment).
+export async function submitPayment(req, res) {
+  const client = await pool.connect();
+  try {
+    const userId = req.user.id;
+    const { fee_plan_id, seat_id, utr_number } = req.body;
+
+    if (!fee_plan_id || !seat_id) {
+      return res.status(400).json({ error: "Fee plan ID and seat ID are required" });
+    }
+
+    const utr = utr_number ? String(utr_number).trim().slice(0, 100) : "";
+    if (!utr) {
+      return res.status(400).json({ error: "UTR/Reference number is required" });
+    }
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: "Payment screenshot is required" });
+    }
+
+    await client.query("BEGIN");
+
+    const { rows: planRows } = await client.query(
+      "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
+      [fee_plan_id]
+    );
+    if (planRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Fee plan not found or inactive" });
+    }
+    const feePlan = planRows[0];
+
+    const { rows: activeMembership } = await client.query(
+      "SELECT id FROM memberships WHERE user_id = $1 AND status IN ('active', 'pending') AND end_date >= CURRENT_DATE",
+      [userId]
+    );
+    if (activeMembership.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "You already have an active or pending membership" });
+    }
+
+    const { rows: existingBookings } = await client.query(
+      "SELECT id FROM bookings WHERE user_id = $1 AND status IN ('active', 'pending')",
+      [userId]
+    );
+    if (existingBookings.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "You already have an active booking" });
+    }
+
+    const { rows: seatRows } = await client.query(
+      "SELECT * FROM seats WHERE id = $1 FOR UPDATE",
+      [seat_id]
+    );
+    if (seatRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Seat not found" });
+    }
+    const seat = seatRows[0];
+    if (seat.status === "disabled") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Seat is disabled" });
+    }
+
+    const { rows: activeSeatBookings } = await client.query(
+      `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
+       FROM bookings b
+       JOIN fee_plans fp ON b.fee_plan_id = fp.id
+       JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
+       WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')
+         AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE`,
+      [seat_id]
+    );
+    if (activeSeatBookings.length >= 2) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Seat is full" });
+    }
+    if (activeSeatBookings.length === 1) {
+      const existing = activeSeatBookings[0];
+      const hasOverlap =
+        existing.is_24_hour ||
+        feePlan.is_24_hour ||
+        (feePlan.start_minute < existing.end_minute && existing.start_minute < feePlan.end_minute);
+      if (hasOverlap) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Timing conflicts with existing booking" });
+      }
+    }
+
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + 1);
+
+    const { rows: membershipRows } = await client.query(
+      `INSERT INTO memberships (user_id, fee_plan_id, status, start_date, end_date)
+       VALUES ($1, $2, 'pending', $3, $4) RETURNING *`,
+      [userId, fee_plan_id, startDate, endDate]
+    );
+    const membership = membershipRows[0];
+
+    const { rows: paymentRows } = await client.query(
+      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type,
+                             utr_number, screenshot_data, screenshot_mime_type)
+       VALUES ($1, $2, $3, 'upi', 'pending', 'online', $4, $5, $6)
+       RETURNING id, user_id, membership_id, amount, method, payment_type, utr_number,
+                 status, admin_note, payment_date, payment_mode, amount_paid, created_at`,
+      [userId, membership.id, feePlan.price, utr, req.file.buffer, req.file.mimetype]
+    );
+    const payment = paymentRows[0];
+
+    const { rows: bookingRows } = await client.query(
+      `INSERT INTO bookings (user_id, seat_id, fee_plan_id, booking_start, booking_end, status, booking_source)
+       VALUES ($1, $2, $3, $4, $5, 'pending', 'online') RETURNING *`,
+      [userId, seat_id, fee_plan_id, membership.start_date, membership.end_date]
+    );
+
+    // Hold the seat while payment is awaiting verification
+    if (seat.status !== "booked") {
+      await client.query("UPDATE seats SET status = 'reserved' WHERE id = $1", [seat_id]);
+    }
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      membership,
+      payment,
+      booking: bookingRows[0],
+      message: "Payment submitted. Waiting for admin approval.",
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
+  }
+}
+
 export async function getSeats(req, res) {
   try {
     const { rows: seats } = await pool.query(
       `SELECT s.id, s.seat_number, s.room_id, r.name as room_name,
               CASE
                 WHEN s.status = 'disabled' THEN 'disabled'
-                WHEN s.status = 'reserved' THEN 'reserved'
                 WHEN EXISTS (
                   SELECT 1 FROM bookings b
                   JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
                   WHERE b.seat_id = s.id AND b.status = 'active'
                     AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE
                 ) THEN 'booked'
+                WHEN EXISTS (
+                  SELECT 1 FROM bookings pb WHERE pb.seat_id = s.id AND pb.status = 'pending'
+                ) THEN 'reserved'
+                WHEN s.status = 'reserved' THEN 'reserved'
                 ELSE 'available'
               END as status,
               sl.position, sl.sort_order,
@@ -188,7 +341,7 @@ export async function bookSeat(req, res) {
     // Cancel any expired bookings for this user and release their seats
     const { rows: expiredBookings } = await client.query(
       `UPDATE bookings SET status = 'cancelled'
-       WHERE user_id = $1 AND status = 'active' AND booking_end < CURRENT_DATE
+       WHERE user_id = $1 AND status IN ('active', 'pending') AND booking_end < CURRENT_DATE
        RETURNING id, seat_id`,
       [userId]
     );
@@ -224,7 +377,7 @@ export async function bookSeat(req, res) {
     const membership = membershipRows[0];
 
     const { rows: existingBookings } = await client.query(
-      "SELECT id FROM bookings WHERE user_id = $1 AND status = 'active'",
+      "SELECT id FROM bookings WHERE user_id = $1 AND status IN ('active', 'pending')",
       [userId]
     );
     if (existingBookings.length > 0) {
@@ -247,13 +400,13 @@ export async function bookSeat(req, res) {
       return res.status(400).json({ error: "Seat is disabled" });
     }
 
-    // Check for active bookings on this seat with non-expired memberships
+    // Check for active OR pending bookings on this seat with non-expired memberships
     const { rows: activeSeatBookings } = await client.query(
       `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
        FROM bookings b
        JOIN fee_plans fp ON b.fee_plan_id = fp.id
        JOIN memberships m ON b.user_id = m.user_id AND b.fee_plan_id = m.fee_plan_id
-       WHERE b.seat_id = $1 AND b.status = 'active'
+       WHERE b.seat_id = $1 AND b.status IN ('active', 'pending')
          AND m.status IN ('active', 'pending') AND m.end_date >= CURRENT_DATE`,
       [seat_id]
     );
@@ -354,7 +507,11 @@ export async function cancelBooking(req, res) {
 export async function getPaymentHistory(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT p.*, fp.name as plan_name
+      `SELECT p.id, p.user_id, p.membership_id, p.amount, p.method, p.payment_type,
+              p.utr_number, p.status, p.admin_note, p.payment_date, p.payment_mode,
+              p.amount_paid, p.created_at,
+              (p.screenshot_data IS NOT NULL) AS has_screenshot,
+              fp.name as plan_name
        FROM payments p
        JOIN memberships m ON p.membership_id = m.id
        JOIN fee_plans fp ON m.fee_plan_id = fp.id
@@ -371,30 +528,39 @@ export async function getPaymentHistory(req, res) {
 
 export async function uploadScreenshot(req, res) {
   try {
-    if (!req.file) {
+    if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: "Screenshot file is required" });
     }
 
-    const { payment_id } = req.body;
+    const { payment_id, utr_number } = req.body;
     if (!payment_id) {
       return res.status(400).json({ error: "Payment ID is required" });
     }
 
     const { rows: paymentRows } = await pool.query(
-      "SELECT * FROM payments WHERE id = $1 AND user_id = $2",
+      "SELECT id, status FROM payments WHERE id = $1 AND user_id = $2",
       [payment_id, req.user.id]
     );
     if (paymentRows.length === 0) {
       return res.status(404).json({ error: "Payment not found" });
     }
 
-    const screenshotUrl = `/uploads/screenshots/${req.file.filename}`;
-    await pool.query(
-      "UPDATE payments SET screenshot_url = $1 WHERE id = $2",
-      [screenshotUrl, payment_id]
-    );
+    // Store screenshot bytes in PostgreSQL (persistent across redeploys),
+    // never on the local filesystem. Optionally update the UTR on the same payment record.
+    const utr = utr_number ? String(utr_number).trim().slice(0, 100) : null;
+    if (utr !== null) {
+      await pool.query(
+        "UPDATE payments SET screenshot_data = $1, screenshot_mime_type = $2, utr_number = $3 WHERE id = $4",
+        [req.file.buffer, req.file.mimetype, utr, payment_id]
+      );
+    } else {
+      await pool.query(
+        "UPDATE payments SET screenshot_data = $1, screenshot_mime_type = $2 WHERE id = $3",
+        [req.file.buffer, req.file.mimetype, payment_id]
+      );
+    }
 
-    res.json({ message: "Screenshot uploaded", screenshot_url: screenshotUrl });
+    res.json({ message: "Screenshot uploaded", has_screenshot: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -460,9 +626,10 @@ export async function submitLostFound(req, res) {
     if (!item_name) {
       return res.status(400).json({ error: "Item name is required" });
     }
+    const itemStatus = ["lost", "found"].includes(status) ? status : "lost";
     const { rows } = await pool.query(
       "INSERT INTO lost_found (user_id, item_name, description, location, status) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, item_name, description || "", location || "", status || "lost"]
+      [req.user.id, item_name, description || "", location || "", itemStatus]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -504,6 +671,38 @@ export async function changePassword(req, res) {
     await pool.query("UPDATE users SET password = $1 WHERE id = $2", [hash, req.user.id]);
 
     res.json({ message: "Password updated successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+// --- Help Desk (student side) ---
+
+export async function submitHelpRequest(req, res) {
+  try {
+    const { subject, message } = req.body;
+    if (!subject || !subject.trim() || !message || !message.trim()) {
+      return res.status(400).json({ error: "Subject and message are required" });
+    }
+    const { rows } = await pool.query(
+      "INSERT INTO help_requests (user_id, subject, message) VALUES ($1, $2, $3) RETURNING *",
+      [req.user.id, subject.trim().slice(0, 200), message.trim()]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+export async function getMyHelpRequests(req, res) {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, subject, message, status, admin_reply, replied_at, created_at FROM help_requests WHERE user_id = $1 ORDER BY created_at DESC",
+      [req.user.id]
+    );
+    res.json(rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });

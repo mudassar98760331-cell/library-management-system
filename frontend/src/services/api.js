@@ -12,7 +12,18 @@ async function request(endpoint, options = {}) {
   if (options.body instanceof FormData) {
     delete config.headers["Content-Type"];
   }
-  const res = await fetch(`${API_BASE}${endpoint}`, config);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${endpoint}`, config);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error(
+        "Cannot reach the server. If you just opened the app, the backend may be waking up — please retry in a few seconds.",
+        { cause: err }
+      );
+    }
+    throw err;
+  }
   const text = await res.text();
   let data = null;
   if (text) {
@@ -59,6 +70,25 @@ export const studentAPI = {
   cancelBooking: (booking_id) =>
     request(`/student/booking/${booking_id}`, { method: "DELETE" }),
   getPaymentHistory: () => request("/student/payment-history"),
+  // Single atomic call: membership (pending) + payment (UTR + screenshot) + booking (pending)
+  submitPayment: ({ fee_plan_id, seat_id, utr_number, screenshot }) => {
+    const formData = new FormData();
+    formData.append("fee_plan_id", fee_plan_id);
+    formData.append("seat_id", seat_id);
+    formData.append("utr_number", utr_number);
+    formData.append("screenshot", screenshot);
+    const token = localStorage.getItem("token");
+    return fetch(`${API_BASE}/student/payment`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    }).then((r) =>
+      r.json().then((d) => {
+        if (!r.ok) throw new Error(d.error || "Payment submission failed");
+        return d;
+      })
+    );
+  },
   uploadScreenshot: (paymentId, file) => {
     const formData = new FormData();
     formData.append("screenshot", file);
@@ -90,6 +120,12 @@ export const studentAPI = {
       body: JSON.stringify(data),
     }),
   getLostFound: () => request("/student/lost-found"),
+  submitHelp: (subject, message) =>
+    request("/student/help", {
+      method: "POST",
+      body: JSON.stringify({ subject, message }),
+    }),
+  getHelp: () => request("/student/help"),
 };
 
 export const adminAPI = {
@@ -102,6 +138,24 @@ export const adminAPI = {
       body: JSON.stringify({ status }),
     }),
   getPayments: () => request("/admin/payments"),
+  // Screenshot lives in the DB behind auth — fetch as blob and create a local URL
+  getPaymentScreenshot: async (id) => {
+    const token = localStorage.getItem("token");
+    const res = await fetch(`${API_BASE}/admin/payments/${id}/screenshot`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let msg = "No screenshot available";
+      try {
+        const d = await res.json();
+        if (d.error) msg = d.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(msg);
+    }
+    return URL.createObjectURL(await res.blob());
+  },
   approvePayment: (id) =>
     request(`/admin/payments/${id}/approve`, { method: "PUT" }),
   rejectPayment: (id, reason) =>
@@ -157,6 +211,12 @@ export const adminAPI = {
     request(`/admin/lost-found/${id}`, {
       method: "PUT",
       body: JSON.stringify({ status }),
+    }),
+  getHelp: () => request("/admin/help"),
+  updateHelp: (id, data) =>
+    request(`/admin/help/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
     }),
   getReports: () => request("/admin/reports"),
   renewMembership: (data) =>

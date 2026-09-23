@@ -51,6 +51,20 @@ function Payments() {
     catch (err) { toast.error(err.message); } finally { setActionId(null); }
   };
 
+  const viewScreenshot = async (id) => {
+    try {
+      const url = await adminAPI.getPaymentScreenshot(id);
+      setShowScreenshot(url);
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+
+  const closeScreenshot = () => {
+    if (showScreenshot) URL.revokeObjectURL(showScreenshot);
+    setShowScreenshot(null);
+  };
+
   const handleOfflineSubmit = async (e) => {
     e.preventDefault();
     setSubmittingOffline(true);
@@ -211,8 +225,8 @@ function Payments() {
                   <td data-label="Status"><span className={`status-badge status-${p.status}`}>{p.status}</span></td>
                   <td data-label="Date">{new Date(p.created_at).toLocaleDateString()}</td>
                   <td data-label="Actions" className="actions-cell">
-                    {p.screenshot_url && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => setShowScreenshot(p.screenshot_url)}>View</button>
+                    {p.has_screenshot && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => viewScreenshot(p.id)}>View</button>
                     )}
                     {p.status === "pending" && (
                       <>
@@ -251,11 +265,11 @@ function Payments() {
       )}
 
       {showScreenshot && (
-        <div className="modal-overlay" onClick={() => setShowScreenshot(null)}>
+        <div className="modal-overlay" onClick={closeScreenshot}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>Payment Screenshot</h2>
-              <button className="modal-close" onClick={() => setShowScreenshot(null)}>&times;</button>
+              <button className="modal-close" onClick={closeScreenshot}>&times;</button>
             </div>
             <div className="modal-body">
               <img src={showScreenshot} alt="Payment screenshot" style={{ width: "100%", borderRadius: 8 }} />
