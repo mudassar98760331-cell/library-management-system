@@ -4,6 +4,7 @@ import { uploadQR } from "../middleware/upload.js";
 import {
   getDashboard,
   getStudents,
+  updateStudent,
   getSeats,
   updateSeatStatus,
   getPayments,
@@ -43,6 +44,7 @@ router.use(authenticate, authorize("admin"));
 
 router.get("/dashboard", getDashboard);
 router.get("/students", getStudents);
+router.put("/students/:id", updateStudent);
 router.get("/seats", getSeats);
 router.put("/seats/:id/status", updateSeatStatus);
 router.get("/payments", getPayments);

@@ -51,7 +51,7 @@ All prefixed with `/api`:
 | `/auth` | public | login, register, getMe |
 | `/student` | JWT + role=student | dashboard, seats, membership, **payment (multipart: UTR + screenshot, atomic)**, payment-history, profile, notifications, help, lost-found, fee-plans, book-seat, upload-screenshot |
 | `/admin` | JWT + role=admin | dashboard, students, seats, payments (+ `GET /payments/:id/screenshot`), offline-booking, fee-plans, settings, notifications, help (`GET /help`, `PUT /help/:id`), lost-found, reports, renew-membership |
-| `/settings` | public | get payment settings (QR code, UPI ID) |
+| `/settings` | public | get payment settings (QR code, UPI ID) + `GET /settings/timings` (4 active timing plans) |
 
 ## Frontend Routes
 

@@ -43,6 +43,25 @@ router.get("/payment-qr", async (_req, res) => {
   }
 });
 
+// Public GET - the four active timing plans for Home / Membership.
+// Returns plan id, name, start/end minute, 24-hour flag, reference price and
+// active flag straight from fee_plans (single source of truth, no hardcoded
+// timings or prices anywhere in the frontend).
+router.get("/timings", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, start_minute, end_minute, is_24_hour, price, is_active
+       FROM fee_plans
+       WHERE is_active = true
+       ORDER BY CASE WHEN start_minute = 0 THEN 1 ELSE 0 END, start_minute`
+    );
+    res.json({ timings: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Admin-only PUT
 router.put("/", authenticate, authorize("admin"), updatePaymentSettings);
 

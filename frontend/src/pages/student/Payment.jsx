@@ -3,15 +3,32 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { studentAPI } from "../../services/api";
 import { useToast } from "../../context/useToast";
 
+// 1-month membership window (mirrors the backend's +1 month calculation).
+// Used as the pre-submit preview; the Confirmation page shows the actual
+// server-computed dates returned by submitPayment.
+function defaultMembershipDates() {
+  const start = new Date();
+  const end = new Date();
+  end.setMonth(end.getMonth() + 1);
+  return {
+    start: start.toLocaleDateString("en-IN"),
+    end: end.toLocaleDateString("en-IN"),
+  };
+}
+
 function Payment() {
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation();
-  const plan = location.state?.plan;
   const seat = location.state?.seat;
   const slots = location.state?.slots || [];
-  const amount = location.state?.quote ?? plan?.price;
+  const quoteFromState = location.state?.quote;
 
+  const [amount, setAmount] = useState(quoteFromState ?? null);
+  // When no quote was carried over, start in the "calculating" state and
+  // request it below (set-state only ever happens in async callbacks).
+  const [quoting, setQuoting] = useState(quoteFromState === null || quoteFromState === undefined);
+  const [membershipDates] = useState(defaultMembershipDates);
   const [settings, setSettings] = useState(null);
   const [utrNumber, setUtrNumber] = useState("");
   const [screenshot, setScreenshot] = useState(null);
@@ -20,8 +37,7 @@ function Payment() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!plan || !seat) { navigate("/student/membership"); return; }
-    if (!slots.length) { navigate("/student/seat-booking", { state: { plan } }); return; }
+    if (!seat || !slots.length) { navigate("/student/seat-booking"); return; }
     fetch("/api/settings")
       .then((r) => (r.ok ? r.text() : ""))
       .then((t) => {
@@ -30,6 +46,12 @@ function Payment() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+    if (quoteFromState === null || quoteFromState === undefined) {
+      studentAPI.quoteSlots(slots.map((s) => s.id))
+        .then((d) => setAmount(d.price))
+        .catch(() => toast.error("Could not calculate the price"))
+        .finally(() => setQuoting(false));
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleScreenshot = (e) => {
@@ -47,23 +69,27 @@ function Payment() {
     e.preventDefault();
     if (!utrNumber.trim()) { toast.error("UTR/Reference number is required"); return; }
     if (!screenshot) { toast.error("Payment screenshot is required"); return; }
+    if (amount === null || quoting) { toast.error("Price is still being calculated"); return; }
     setSubmitting(true);
     try {
-      await studentAPI.submitPayment({
-        fee_plan_id: plan.id,
+      // No fee_plan_id / amount: the backend derives the plan from the slots
+      // and computes the final price server-side.
+      const res = await studentAPI.submitPayment({
         seat_id: seat.id,
         slot_ids: slots.map((s) => s.id),
         utr_number: utrNumber.trim(),
         screenshot,
       });
       toast.success("Payment submitted successfully!");
+      const membership = res?.membership;
       navigate("/student/confirmation", {
         state: {
-          plan,
           seat,
           slots,
-          amount,
+          amount: res?.payment?.amount ?? amount,
           utrNumber,
+          membershipStart: membership?.start_date || membershipDates.start,
+          membershipExpiry: membership?.end_date || membershipDates.end,
           paymentSubmitted: true,
           timestamp: new Date().toISOString(),
         },
@@ -92,7 +118,7 @@ function Payment() {
           <div className="stepper-number">&#10003;</div><span>Membership</span>
         </div>
         <div className="stepper-line active" />
-        <div className="stepper-step completed" onClick={() => navigate("/student/seat-booking", { state: { plan } })}>
+        <div className="stepper-step completed" onClick={() => navigate("/student/seat-booking")}>
           <div className="stepper-number">&#10003;</div><span>Seat Selection</span>
         </div>
         <div className="stepper-line active" />
@@ -105,10 +131,6 @@ function Payment() {
         <h3>Booking Summary</h3>
         <div className="payment-summary-grid">
           <div className="payment-summary-item">
-            <span className="summary-label">Membership Plan</span>
-            <span className="summary-value">{plan?.name}</span>
-          </div>
-          <div className="payment-summary-item">
             <span className="summary-label">Access Slots</span>
             <span className="summary-value">{slots.map((s) => s.name).join(", ")}</span>
           </div>
@@ -117,8 +139,18 @@ function Payment() {
             <span className="summary-value">{seat?.seat_number} &mdash; {seat?.room_name}</span>
           </div>
           <div className="payment-summary-item">
+            <span className="summary-label">Membership Start</span>
+            <span className="summary-value">{membershipDates.start}</span>
+          </div>
+          <div className="payment-summary-item">
+            <span className="summary-label">Membership Expiry</span>
+            <span className="summary-value">{membershipDates.end}</span>
+          </div>
+          <div className="payment-summary-item">
             <span className="summary-label">Amount</span>
-            <span className="summary-value amount">&#8377;{amount}</span>
+            <span className="summary-value amount">
+              {amount !== null ? `\u20B9${amount}` : quoting ? "Calculating\u2026" : "\u2014"}
+            </span>
           </div>
         </div>
       </div>
@@ -166,12 +198,12 @@ function Payment() {
           <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleScreenshot} />
           {screenshotPreview && <img src={screenshotPreview} alt="Preview" className="screenshot-preview" />}
         </div>
-        <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
+        <button type="submit" className="btn btn-primary btn-block" disabled={submitting || quoting || amount === null}>
           {submitting ? "Submitting..." : "Submit Payment"}
         </button>
       </form>
 
-      <button className="btn btn-secondary btn-block" onClick={() => navigate("/student/seat-booking", { state: { plan } })}>
+      <button className="btn btn-secondary btn-block" onClick={() => navigate("/student/seat-booking")}>
         &larr; Back to Seat Selection
       </button>
     </div>

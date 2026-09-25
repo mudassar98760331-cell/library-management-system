@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { studentAPI } from "../../services/api";
 import { useToast } from "../../context/useToast";
 
@@ -33,10 +33,6 @@ function seatDisplay(seatNum) {
 function SeatBooking() {
   const toast = useToast();
   const navigate = useNavigate();
-  const location = useLocation();
-  const plan = location.state?.plan || (() => {
-    try { const s = sessionStorage.getItem("selectedPlan"); return s ? JSON.parse(s) : null; } catch { return null; }
-  })();
 
   const [seats, setSeats] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -50,7 +46,6 @@ function SeatBooking() {
   const quoteRequestRef = useRef(0);
 
   useEffect(() => {
-    if (!plan) { navigate("/student/membership"); return; }
     studentAPI.getSeats().then(setSeats).catch(() => toast.error("Failed to load seats")).finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -128,7 +123,7 @@ function SeatBooking() {
     if (!selectedSeat) { toast.error("Please select a seat"); return; }
     if (!selectedSlots.length) { toast.error("Please select at least one time slot"); return; }
     if (quote === null || quoting) { toast.error("Price is still being calculated"); return; }
-    navigate("/student/payment", { state: { plan, seat: selectedSeat, slots: selectedSlots, quote } });
+    navigate("/student/payment", { state: { seat: selectedSeat, slots: selectedSlots, quote } });
   };
 
   const renderSeat = (num) => (
@@ -215,14 +210,13 @@ function SeatBooking() {
           <div className="label">Student Portal</div>
           <h1>&#128186; Select Your Seat</h1>
           <div className="subtitle">
-            {plan && <span>Plan: <strong>{plan.name}</strong> &mdash; </span>}
             Choose your seat, then pick one or more time slots. Real room layout as per Lakshya Library.
           </div>
         </div>
       </div>
 
       <div className="booking-stepper">
-        <div className="stepper-step completed" onClick={() => navigate("/student/membership", { state: { plan } })}>
+        <div className="stepper-step completed" onClick={() => navigate("/student/membership")}>
           <div className="stepper-number">&#10003;</div><span>Membership</span>
         </div>
         <div className="stepper-line active" />
@@ -250,7 +244,7 @@ function SeatBooking() {
         <div className="booking-panel">
           <div className="booking-info">
             <h3>Seat {seatDisplay(selectedSeat.seat_number)}</h3>
-            <p>Room: {selectedSeat.room_name} &mdash; Plan: {plan?.name}</p>
+            <p>Room: {selectedSeat.room_name}</p>
           </div>
           <div className="slot-picker">
             <div className="slot-picker-title">

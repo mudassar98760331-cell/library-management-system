@@ -1,8 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { publicAPI } from "../services/api";
+
+// Descriptive copy per timing window (presentation only — the timing cards
+// themselves come from GET /api/settings/timings; no prices are ever shown).
+const TIMING_DESC = {
+  300: "Early morning session",
+  600: "Full day session",
+  1140: "Late evening session",
+  0: "Night session",
+};
 
 function Home() {
   const location = useLocation();
+  const [timings, setTimings] = useState([]);
 
   useEffect(() => {
     if (location.hash) {
@@ -14,6 +25,17 @@ function Home() {
       return () => clearTimeout(timer);
     }
   }, [location.hash]);
+
+  useEffect(() => {
+    let cancelled = false;
+    publicAPI.getTimings()
+      .then((d) => {
+        if (cancelled || !d?.timings?.length) return;
+        setTimings(d.timings.map((t) => ({ ...t, desc: TIMING_DESC[t.start_minute] || t.name })));
+      })
+      .catch(() => { /* timings stay empty until the API responds */ });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="home-page">
@@ -80,22 +102,12 @@ function Home() {
           <p>Four flexible access slots to match your schedule. Log in to check availability and book your slot.</p>
         </div>
         <div className="home-plans">
-          <div className="plan">
-            <h3>5:00 AM &ndash; 10:00 AM</h3>
-            <p>Early morning session</p>
-          </div>
-          <div className="plan">
-            <h3>10:00 AM &ndash; 6:30 PM</h3>
-            <p>Full day session</p>
-          </div>
-          <div className="plan">
-            <h3>7:00 PM &ndash; 12:00 AM</h3>
-            <p>Late evening session</p>
-          </div>
-          <div className="plan">
-            <h3>12:00 AM &ndash; 5:00 AM</h3>
-            <p>Night session</p>
-          </div>
+          {timings.map((plan) => (
+            <div className="plan" key={plan.id}>
+              <h3>{plan.name.replace(/\s*to\s*/, " \u2013 ")}</h3>
+              <p>{plan.desc}</p>
+            </div>
+          ))}
         </div>
       </section>
 

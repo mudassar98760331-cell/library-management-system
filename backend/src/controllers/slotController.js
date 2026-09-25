@@ -2,6 +2,7 @@ import pool from "../config/db.js";
 import {
   quoteSlots,
   getSeatSlotAvailability,
+  getSeatSlotOccupants,
 } from "../services/pricing.js";
 
 // GET /api/student/seats/:id/slots  (also used by admin)
@@ -29,6 +30,20 @@ export async function getSeatSlots(req, res) {
     }
 
     const slots = await getSeatSlotAvailability(client, seatId);
+
+    // Admins additionally see WHO currently holds each booked slot
+    // (student-facing responses only show "Booked").
+    if (req.user?.role === "admin") {
+      const bookedSlotIds = slots
+        .filter((s) => s.status === "booked")
+        .map((s) => s.id);
+      const occupants = await getSeatSlotOccupants(client, seatId, bookedSlotIds);
+      for (const slot of slots) {
+        const name = occupants.get(slot.id);
+        if (name) slot.booked_by = name;
+      }
+    }
+
     res.json({
       seat: {
         id: seat.id,

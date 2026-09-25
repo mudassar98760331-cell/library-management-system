@@ -1,23 +1,22 @@
 import { useEffect } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 
+function formatDate(value) {
+  if (!value) return "\u2014";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString("en-IN");
+}
+
 function Confirmation() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { plan, seat, slots = [], amount, utrNumber, timestamp } = location.state || {};
+  const { seat, slots = [], amount, utrNumber, timestamp, membershipStart, membershipExpiry } = location.state || {};
 
   useEffect(() => {
-    if (!plan || !seat) { navigate("/student/membership"); }
+    if (!seat || !slots.length) { navigate("/student/seat-booking"); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!plan || !seat) return null;
-
-  const formatTime = (m) => {
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
-    const ap = h >= 12 ? "PM" : "AM";
-    return `${h % 12 || 12}:${String(mm).padStart(2, "0")} ${ap}`;
-  };
+  if (!seat || !slots.length) return null;
 
   return (
     <div>
@@ -48,18 +47,8 @@ function Confirmation() {
 
         <div className="confirmation-details">
           <div className="confirmation-row">
-            <span className="confirmation-label">Membership Plan</span>
-            <span className="confirmation-value">{plan.name}</span>
-          </div>
-          <div className="confirmation-row">
-            <span className="confirmation-label">{slots.length ? "Access Slots" : "Timing"}</span>
-            <span className="confirmation-value">
-              {slots.length
-                ? slots.map((s) => s.name).join(", ")
-                : plan.is_24_hour
-                  ? "24 Hours Access"
-                  : `${formatTime(plan.start_minute)} \u2013 ${formatTime(plan.end_minute)}`}
-            </span>
+            <span className="confirmation-label">Access Slots</span>
+            <span className="confirmation-value">{slots.map((s) => s.name).join(", ")}</span>
           </div>
           <div className="confirmation-row">
             <span className="confirmation-label">Room</span>
@@ -70,8 +59,16 @@ function Confirmation() {
             <span className="confirmation-value">{seat.seat_number}</span>
           </div>
           <div className="confirmation-row">
+            <span className="confirmation-label">Membership Start</span>
+            <span className="confirmation-value">{formatDate(membershipStart)}</span>
+          </div>
+          <div className="confirmation-row">
+            <span className="confirmation-label">Membership Expiry</span>
+            <span className="confirmation-value">{formatDate(membershipExpiry)}</span>
+          </div>
+          <div className="confirmation-row">
             <span className="confirmation-label">Amount</span>
-            <span className="confirmation-value amount">&#8377;{amount ?? plan.price}</span>
+            <span className="confirmation-value amount">{amount != null ? `\u20B9${amount}` : "\u2014"}</span>
           </div>
           <div className="confirmation-row">
             <span className="confirmation-label">UTR / Reference</span>

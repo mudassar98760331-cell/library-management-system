@@ -24,6 +24,9 @@ function Seats() {
   const [offlineQuote, setOfflineQuote] = useState(null);
   const [offlineQuoting, setOfflineQuoting] = useState(false);
   const offlineQuoteReqRef = useRef(0);
+  // Ref (not state): consulted only inside handlers — tracks whether the
+  // admin manually edited the amount (so quotes never overwrite their input).
+  const offlineAmountTouchedRef = useRef(false);
   const [offlineForm, setOfflineForm] = useState({
     student_name: "",
     phone: "",
@@ -50,8 +53,22 @@ function Seats() {
       .then(setSeats)
       .catch(() => toast.error("Failed to load seats"))
       .finally(() => setLoading(false));
-    adminAPI.getFeePlans().then(setFeePlans).catch(() => { });
+    adminAPI.getFeePlans()
+      .then((plans) => setFeePlans(plans.filter((p) => p.is_active)))
+      .catch(() => { });
   }, [toast]);
+
+  // The backend derives the membership's fee plan from the primary selected
+  // slot — keep the dropdown truthful by auto-selecting the matching plan.
+  const syncPlanToSlots = (ids, slotsArr) => {
+    if (!ids.length) return;
+    const primary = slotsArr.find((s) => s.id === ids[0]);
+    if (!primary) return;
+    const match = feePlans.find(
+      (p) => p.start_minute === primary.start_minute && p.end_minute === primary.end_minute
+    );
+    if (match) setOfflineForm((prev) => ({ ...prev, fee_plan_id: String(match.id) }));
+  };
 
   const handleStatusChange = async (seatId, newStatus) => {
     try {
@@ -70,9 +87,10 @@ function Seats() {
     } catch (err) { toast.error(err.message); }
   };
 
-  // Slot pricing always comes from the backend quote — the amount field becomes
-  // read-only whenever slots are selected. The request id guard ensures a stale
-  // response never overwrites a newer selection's price.
+  // Reference price from the backend (configured combination price). It is
+  // displayed as the default/reference amount and prefills the editable
+  // amount field until the admin changes it. The admin-entered amount is
+  // the FINAL charged amount — the backend stores both values.
   const requestOfflineQuote = (ids) => {
     const reqId = ++offlineQuoteReqRef.current;
     if (!ids.length) {
@@ -82,12 +100,17 @@ function Seats() {
     }
     setOfflineQuoting(true);
     adminAPI.quoteSlots(ids)
-      .then((d) => { if (reqId === offlineQuoteReqRef.current) setOfflineQuote(d.price); })
-      .catch(() => {
-        if (reqId === offlineQuoteReqRef.current) {
-          setOfflineQuote(null);
-          toast.error("Could not calculate the price");
+      .then((d) => {
+        if (reqId !== offlineQuoteReqRef.current) return;
+        setOfflineQuote(d.price);
+        if (!offlineAmountTouchedRef.current) {
+          setOfflineForm((prev) => ({ ...prev, amount: String(d.price) }));
         }
+      })
+      .catch(() => {
+        if (reqId !== offlineQuoteReqRef.current) return;
+        setOfflineQuote(null);
+        toast.error("Could not calculate the reference price");
       })
       .finally(() => { if (reqId === offlineQuoteReqRef.current) setOfflineQuoting(false); });
   };
@@ -98,6 +121,7 @@ function Seats() {
       ? offlineSlotIds.filter((id) => id !== slot.id)
       : [...offlineSlotIds, slot.id].sort((a, b) => a - b);
     setOfflineSlotIds(next);
+    syncPlanToSlots(next, offlineSlots);
     requestOfflineQuote(next);
   };
 
@@ -120,6 +144,7 @@ function Seats() {
     ++offlineQuoteReqRef.current;
     setOfflineQuote(null);
     setOfflineQuoting(false);
+    offlineAmountTouchedRef.current = false;
     setOfflineModal(seat);
     adminAPI.getSeatSlots(seat.id)
       .then((d) => setOfflineSlots(d.slots || []))
@@ -130,14 +155,13 @@ function Seats() {
     e.preventDefault();
     setSubmittingOffline(true);
     try {
-      const hasSlots = offlineSlotIds.length > 0;
       const payload = {
         ...offlineForm,
         seat_id: Number(offlineForm.seat_id),
         fee_plan_id: Number(offlineForm.fee_plan_id),
-        amount: hasSlots ? offlineQuote : Number(offlineForm.amount),
+        amount: Number(offlineForm.amount),
       };
-      if (hasSlots) payload.slot_ids = offlineSlotIds;
+      if (offlineSlotIds.length) payload.slot_ids = offlineSlotIds;
       await adminAPI.createOfflineBooking(payload);
       toast.success("Offline booking created successfully!");
       setOfflineModal(null);
@@ -364,7 +388,21 @@ function Seats() {
                   </div>
                   <div className="form-group">
                     <label>Fee Plan *</label>
-                    <select value={offlineForm.fee_plan_id} onChange={(e) => setOfflineForm({ ...offlineForm, fee_plan_id: e.target.value })} required>
+                    <select
+                      value={offlineForm.fee_plan_id}
+                      onChange={(e) => {
+                        const plan = feePlans.find((p) => p.id === Number(e.target.value));
+                        setOfflineForm((prev) => ({
+                          ...prev,
+                          fee_plan_id: e.target.value,
+                          amount:
+                            offlineAmountTouchedRef.current || !plan || offlineSlotIds.length
+                              ? prev.amount
+                              : String(plan.price),
+                        }));
+                      }}
+                      required
+                    >
                       <option value="">Select Plan</option>
                       {feePlans.map((fp) => (<option key={fp.id} value={fp.id}>{fp.name} - &#8377;{fp.price}</option>))}
                     </select>
@@ -383,11 +421,15 @@ function Seats() {
                           className={`slot-option${isSelected ? " selected" : ""}${isBooked ? " unavailable" : ""}`}
                           disabled={isBooked}
                           onClick={() => toggleOfflineSlot(slot)}
-                          title={isBooked ? "Already booked for this seat" : slot.name}
+                          title={slot.booked_by ? `Booked by ${slot.booked_by}` : slot.name}
                         >
                           <span className="slot-name">{slot.name}</span>
                           <span className="slot-status">
-                            {isBooked ? "Booked" : isSelected ? "Selected" : "Available"}
+                            {isSelected
+                              ? "Selected"
+                              : isBooked
+                                ? slot.booked_by ? `Booked — ${slot.booked_by}` : "Booked"
+                                : "Available"}
                           </span>
                         </button>
                       );
@@ -396,23 +438,37 @@ function Seats() {
                   {offlineSlots.length === 0 && (
                     <div className="slot-empty">Loading availability&hellip;</div>
                   )}
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 6 }}>
+                    {offlineSlotIds.length
+                      ? `Selected Slots: ${offlineSlots.filter((s) => offlineSlotIds.includes(s.id)).map((s) => s.name).join(", ")}`
+                      : "No slots selected — the whole seat/day is not assumed to be booked."}
+                  </div>
                 </div>
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Amount Paid *</label>
+                    <label>Final Amount Paid *</label>
                     <input
                       type="number"
-                      value={offlineSlotIds.length ? (offlineQuote ?? "") : offlineForm.amount}
-                      onChange={(e) => setOfflineForm({ ...offlineForm, amount: e.target.value })}
-                      readOnly={offlineSlotIds.length > 0}
-                      placeholder={offlineSlotIds.length ? "Calculated from slots" : ""}
+                      min="1"
+                      value={offlineForm.amount}
+                      onChange={(e) => {
+                        offlineAmountTouchedRef.current = true;
+                        setOfflineForm({ ...offlineForm, amount: e.target.value });
+                      }}
+                      placeholder="Enter final amount to charge"
                       required
                     />
-                    {offlineSlotIds.length > 0 && (
-                      <small style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                        {offlineQuoting ? "Calculating\u2026" : "Auto-calculated from the selected slots"}
-                      </small>
-                    )}
+                    <small style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                      {offlineSlotIds.length
+                        ? offlineQuoting
+                          ? "Calculating reference price\u2026"
+                          : offlineQuote !== null
+                            ? `Default / reference price: \u20B9${offlineQuote} \u2014 editable`
+                            : "Reference price unavailable \u2014 the amount you enter is final."
+                        : offlineForm.fee_plan_id
+                          ? `Default / reference price: \u20B9${feePlans.find((p) => p.id === Number(offlineForm.fee_plan_id))?.price ?? "\u2014"} \u2014 editable`
+                          : "The amount you enter is the final charged amount."}
+                    </small>
                   </div>
                   <div className="form-group">
                     <label>Payment Mode *</label>
@@ -441,7 +497,13 @@ function Seats() {
                   <button
                     type="submit"
                     className="btn btn-primary"
-                    disabled={submittingOffline || (offlineSlotIds.length > 0 && (offlineQuoting || offlineQuote === null))}
+                    disabled={
+                      submittingOffline ||
+                      !offlineForm.amount ||
+                      !Number.isInteger(Number(offlineForm.amount)) ||
+                      Number(offlineForm.amount) < 0 ||
+                      (offlineSlotIds.length > 0 && offlineQuoting)
+                    }
                   >
                     {submittingOffline ? "Creating..." : "Create Offline Booking"}
                   </button>

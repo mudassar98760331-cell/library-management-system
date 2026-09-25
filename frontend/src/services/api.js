@@ -68,6 +68,11 @@ export const authAPI = {
     }),
 };
 
+export const publicAPI = {
+  // Public: the four active timing plans (no prices) for Home / Membership
+  getTimings: () => request("/settings/timings"),
+};
+
 export const studentAPI = {
   getDashboard: () => request("/student/dashboard"),
   getFeePlans: () => request("/student/fee-plans"),
@@ -93,10 +98,13 @@ export const studentAPI = {
   cancelBooking: (booking_id) =>
     request(`/student/booking/${booking_id}`, { method: "DELETE" }),
   getPaymentHistory: () => request("/student/payment-history"),
-  // Single atomic call: membership (pending) + payment (UTR + screenshot) + booking (pending)
+  // Single atomic call: membership (pending) + payment (UTR + screenshot) + booking (pending).
+  // fee_plan_id is optional: slot bookings derive the plan + price on the server.
   submitPayment: ({ fee_plan_id, seat_id, slot_ids, utr_number, screenshot }) => {
     const formData = new FormData();
-    formData.append("fee_plan_id", fee_plan_id);
+    if (fee_plan_id !== undefined && fee_plan_id !== null && fee_plan_id !== "") {
+      formData.append("fee_plan_id", fee_plan_id);
+    }
     formData.append("seat_id", seat_id);
     if (slot_ids && slot_ids.length) {
       formData.append("slot_ids", JSON.stringify(slot_ids));
@@ -204,6 +212,12 @@ export const adminAPI = {
     }),
   deleteStudent: (id) =>
     request(`/admin/students/${id}`, { method: "DELETE" }),
+  // Admin edits only the JOINING date (users.created_at) from Student Details
+  updateStudent: (id, data) =>
+    request(`/admin/students/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   getFeePlans: () => request("/admin/fee-plans"),
   updateFeePlan: (id, data) =>
     request(`/admin/fee-plans/${id}`, {

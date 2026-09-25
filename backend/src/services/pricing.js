@@ -66,6 +66,23 @@ export async function quoteSlots(rawSlotIds, client = pool) {
   return { ok: true, slotIds, slots, price };
 }
 
+// Memberships/bookings still reference a fee_plan row (dashboards, payment
+// history and historical reporting all join it). For slot-based bookings the
+// plan is DERIVED from the primary (earliest-numbered) selected slot so the
+// stored timing label always matches the booked slots — the client-supplied
+// fee_plan_id is never trusted for slot bookings. Returns null when no active
+// plan matches the slot's time range.
+export async function resolveFeePlanForSlots(client, slots) {
+  const primary = slots[0];
+  const { rows } = await client.query(
+    `SELECT * FROM fee_plans
+     WHERE start_minute = $1 AND end_minute = $2 AND is_active = true
+     ORDER BY id LIMIT 1`,
+    [primary.start_minute, primary.end_minute]
+  );
+  return rows[0] || null;
+}
+
 // Per-seat slot availability. A slot is 'booked' for a seat when any active or
 // pending non-expired booking on that seat occupies it:
 //   - slot-based bookings occupy exactly their booking_slots rows
@@ -76,25 +93,24 @@ export async function getSeatSlotAvailability(client, seatId) {
   const { rows } = await client.query(
     `SELECT sl.id, sl.slot_number, sl.name, sl.start_minute, sl.end_minute,
             CASE WHEN EXISTS (
-              SELECT 1 FROM bookings b
-              LEFT JOIN fee_plans fp ON b.fee_plan_id = fp.id
+              SELECT 1 FROM booking_slots bs
+              JOIN bookings b ON b.id = bs.booking_id
               WHERE b.seat_id = $1
                 AND b.status IN ('active', 'pending')
                 AND (b.booking_end IS NULL OR b.booking_end >= CURRENT_DATE)
+                AND bs.slot_id = sl.id
+            ) OR EXISTS (
+              SELECT 1 FROM bookings b
+              JOIN fee_plans fp ON b.fee_plan_id = fp.id
+              WHERE b.seat_id = $1
+                AND b.status IN ('active', 'pending')
+                AND (b.booking_end IS NULL OR b.booking_end >= CURRENT_DATE)
+                AND NOT EXISTS (
+                  SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id
+                )
                 AND (
-                  EXISTS (
-                    SELECT 1 FROM booking_slots bs
-                    WHERE bs.booking_id = b.id AND bs.slot_id = sl.id
-                  )
-                  OR (
-                    NOT EXISTS (
-                      SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id
-                    )
-                    AND (
-                      fp.is_24_hour = true
-                      OR (sl.start_minute < fp.end_minute AND fp.start_minute < sl.end_minute)
-                    )
-                  )
+                  fp.is_24_hour = true
+                  OR (sl.start_minute < fp.end_minute AND fp.start_minute < sl.end_minute)
                 )
             ) THEN 'booked' ELSE 'available' END as status
      FROM slots sl
@@ -108,4 +124,44 @@ export async function getSeatSlotAvailability(client, seatId) {
 // True when at least one slot on the seat is still selectable.
 export function hasAvailableSlot(availability) {
   return availability.some((s) => s.status === "available");
+}
+
+// Occupant names for booked slots (admin UI only — shows WHO holds each slot).
+// Uses the same blocking rules as getSeatSlotAvailability: explicit
+// booking_slots rows first, then legacy plan-range bookings.
+export async function getSeatSlotOccupants(client, seatId, slotIds) {
+  const map = new Map();
+  if (!slotIds || slotIds.length === 0) return map;
+
+  const { rows: explicit } = await client.query(
+    `SELECT bs.slot_id, u.name as booked_by
+     FROM booking_slots bs
+     JOIN bookings b ON b.id = bs.booking_id
+     JOIN users u ON u.id = b.user_id
+     WHERE b.seat_id = $1
+       AND bs.slot_id = ANY($2::int[])
+       AND b.status IN ('active', 'pending')
+       AND (b.booking_end IS NULL OR b.booking_end >= CURRENT_DATE)
+     ORDER BY b.booked_at DESC, b.id DESC`,
+    [seatId, slotIds]
+  );
+  for (const r of explicit) if (!map.has(r.slot_id)) map.set(r.slot_id, r.booked_by);
+
+  const { rows: legacy } = await client.query(
+    `SELECT sl.id as slot_id, u.name as booked_by
+     FROM slots sl
+     JOIN bookings b ON b.seat_id = $1
+       AND b.status IN ('active', 'pending')
+       AND (b.booking_end IS NULL OR b.booking_end >= CURRENT_DATE)
+     JOIN fee_plans fp ON b.fee_plan_id = fp.id
+     JOIN users u ON u.id = b.user_id
+     WHERE sl.id = ANY($2::int[])
+       AND NOT EXISTS (SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id)
+       AND (fp.is_24_hour = true OR (sl.start_minute < fp.end_minute AND fp.start_minute < sl.end_minute))
+     ORDER BY b.booked_at DESC, b.id DESC`,
+    [seatId, slotIds]
+  );
+  for (const r of legacy) if (!map.has(r.slot_id)) map.set(r.slot_id, r.booked_by);
+
+  return map;
 }

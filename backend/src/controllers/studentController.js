@@ -1,6 +1,6 @@
 import pool from "../config/db.js";
 import bcrypt from "bcryptjs";
-import { quoteSlots, getSeatSlotAvailability } from "../services/pricing.js";
+import { quoteSlots, getSeatSlotAvailability, resolveFeePlanForSlots } from "../services/pricing.js";
 
 export async function getDashboard(req, res) {
   try {
@@ -147,9 +147,12 @@ export async function submitPayment(req, res) {
   try {
     const userId = req.user.id;
     const { fee_plan_id, seat_id, utr_number } = req.body;
+    const rawSlotIds = req.body.slot_ids;
+    const wantsSlots =
+      rawSlotIds !== undefined && rawSlotIds !== null && rawSlotIds !== "";
 
-    if (!fee_plan_id || !seat_id) {
-      return res.status(400).json({ error: "Fee plan ID and seat ID are required" });
+    if (!seat_id) {
+      return res.status(400).json({ error: "Seat ID is required" });
     }
 
     const utr = utr_number ? String(utr_number).trim().slice(0, 100) : "";
@@ -162,15 +165,45 @@ export async function submitPayment(req, res) {
 
     await client.query("BEGIN");
 
-    const { rows: planRows } = await client.query(
-      "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
-      [fee_plan_id]
-    );
-    if (planRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Fee plan not found or inactive" });
+    // --- Price/plan resolution (the server is the final authority):
+    //  - Slot bookings: price comes from the configured slot quote and the
+    //    fee plan is DERIVED from the primary selected slot. The client never
+    //    sends an amount for slot bookings and its fee_plan_id is ignored.
+    //  - Legacy bookings: an active fee plan is required and its price is final.
+    let selectedSlots = null;
+    let amount;
+    let feePlan;
+    if (wantsSlots) {
+      const quoted = await quoteSlots(rawSlotIds, client);
+      if (!quoted.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: quoted.error });
+      }
+      selectedSlots = quoted.slots;
+      amount = quoted.price;
+      feePlan = await resolveFeePlanForSlots(client, selectedSlots);
+      if (!feePlan) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "No matching timing plan is configured for the selected slots",
+        });
+      }
+    } else {
+      if (!fee_plan_id) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Fee plan ID is required when no slots are selected" });
+      }
+      const { rows: planRows } = await client.query(
+        "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
+        [fee_plan_id]
+      );
+      if (planRows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Fee plan not found or inactive" });
+      }
+      feePlan = planRows[0];
+      amount = feePlan.price;
     }
-    const feePlan = planRows[0];
 
     const { rows: activeMembership } = await client.query(
       "SELECT id FROM memberships WHERE user_id = $1 AND status IN ('active', 'pending') AND end_date >= CURRENT_DATE",
@@ -204,24 +237,9 @@ export async function submitPayment(req, res) {
       return res.status(400).json({ error: "Seat is disabled" });
     }
 
-    // --- Slot booking (new flow): validate selection and calculate the FINAL
-    // price on the server. The client never sends an amount for slot bookings.
-    const rawSlotIds = req.body.slot_ids;
-    const wantsSlots =
-      rawSlotIds !== undefined && rawSlotIds !== null && rawSlotIds !== "";
-    let selectedSlots = null;
-    let amount = feePlan.price;
-    if (wantsSlots) {
-      const quoted = await quoteSlots(rawSlotIds, client);
-      if (!quoted.ok) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: quoted.error });
-      }
-      selectedSlots = quoted.slots;
-      amount = quoted.price;
-
-      // Each selected slot must still be free on THIS seat (per-slot, so one
-      // booked slot never blocks the others).
+    // --- Each selected slot must still be free on THIS seat (per-slot, so
+    // one booked slot never blocks the others).
+    if (selectedSlots) {
       const availability = await getSeatSlotAvailability(client, Number(seat_id));
       const bookedIds = new Set(
         availability.filter((s) => s.status === "booked").map((s) => s.id)
@@ -269,16 +287,16 @@ export async function submitPayment(req, res) {
     const { rows: membershipRows } = await client.query(
       `INSERT INTO memberships (user_id, fee_plan_id, status, start_date, end_date)
        VALUES ($1, $2, 'pending', $3, $4) RETURNING *`,
-      [userId, fee_plan_id, startDate, endDate]
+      [userId, feePlan.id, startDate, endDate]
     );
     const membership = membershipRows[0];
 
     const { rows: paymentRows } = await client.query(
       `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type,
-                             utr_number, screenshot_data, screenshot_mime_type)
-       VALUES ($1, $2, $3, 'upi', 'pending', 'online', $4, $5, $6)
+                             utr_number, screenshot_data, screenshot_mime_type, reference_amount)
+       VALUES ($1, $2, $3, 'upi', 'pending', 'online', $4, $5, $6, $3)
        RETURNING id, user_id, membership_id, amount, method, payment_type, utr_number,
-                 status, admin_note, payment_date, payment_mode, amount_paid, created_at`,
+                 status, admin_note, payment_date, payment_mode, amount_paid, reference_amount, created_at`,
       [userId, membership.id, amount, utr, req.file.buffer, req.file.mimetype]
     );
     const payment = paymentRows[0];
@@ -286,7 +304,7 @@ export async function submitPayment(req, res) {
     const { rows: bookingRows } = await client.query(
       `INSERT INTO bookings (user_id, seat_id, fee_plan_id, booking_start, booking_end, status, booking_source)
        VALUES ($1, $2, $3, $4, $5, 'pending', 'online') RETURNING *`,
-      [userId, seat_id, fee_plan_id, membership.start_date, membership.end_date]
+      [userId, seat_id, feePlan.id, membership.start_date, membership.end_date]
     );
 
     // Remember exactly which slots this booking occupies (Booking -> Slot link)

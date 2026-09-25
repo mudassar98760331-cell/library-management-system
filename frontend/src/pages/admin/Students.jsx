@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { adminAPI } from "../../services/api";
 import { useToast } from "../../context/useToast";
 
@@ -36,6 +36,8 @@ function Students() {
   const [assigning, setAssigning] = useState(false);
 
   const [viewModal, setViewModal] = useState(null);
+  const [viewJoining, setViewJoining] = useState("");
+  const [savingJoining, setSavingJoining] = useState(false);
 
   const [renewModal, setRenewModal] = useState(null);
   const [feePlans, setFeePlans] = useState([]);
@@ -47,6 +49,13 @@ function Students() {
     end_date: "",
   });
   const [renewing, setRenewing] = useState(false);
+  const [renewSlots, setRenewSlots] = useState([]);
+  const [renewSlotIds, setRenewSlotIds] = useState([]);
+  const [renewQuote, setRenewQuote] = useState(null);
+  const [renewQuoting, setRenewQuoting] = useState(false);
+  // Ref (not state): only consulted inside handlers, never rendered.
+  const renewAmountTouchedRef = useRef(false);
+  const renewQuoteReqRef = useRef(0);
 
   const fetchStudents = useCallback(() => {
     adminAPI.getStudents()
@@ -113,6 +122,18 @@ function Students() {
       start_date: defaultRenewStartDate(),
       end_date: defaultRenewEndDate(),
     });
+    setRenewSlots([]);
+    setRenewSlotIds([]);
+    ++renewQuoteReqRef.current;
+    setRenewQuote(null);
+    setRenewQuoting(false);
+    renewAmountTouchedRef.current = false;
+    // Load per-slot availability for the student's current seat (if any).
+    if (student.seat_id) {
+      adminAPI.getSeatSlots(student.seat_id)
+        .then((d) => setRenewSlots(d.slots || []))
+        .catch(() => toast.error("Failed to load slot availability"));
+    }
     try {
       const plans = await adminAPI.getFeePlans();
       setFeePlans(plans.filter((p) => p.is_active));
@@ -121,12 +142,65 @@ function Students() {
     }
   };
 
+  // Reference price = configured combination price from the backend quote.
+  // It is shown to the admin as a reference only — the amount stays editable
+  // and the admin-entered amount is the final charged amount.
+  const requestRenewQuote = (ids) => {
+    const reqId = ++renewQuoteReqRef.current;
+    if (!ids.length) {
+      setRenewQuote(null);
+      setRenewQuoting(false);
+      return;
+    }
+    setRenewQuoting(true);
+    adminAPI.quoteSlots(ids)
+      .then((d) => {
+        if (reqId !== renewQuoteReqRef.current) return;
+        setRenewQuote(d.price);
+        if (!renewAmountTouchedRef.current) {
+          setRenewForm((prev) => ({ ...prev, amount: String(d.price) }));
+        }
+      })
+      .catch(() => {
+        if (reqId !== renewQuoteReqRef.current) return;
+        setRenewQuote(null);
+        toast.error("Could not calculate the reference price");
+      })
+      .finally(() => { if (reqId === renewQuoteReqRef.current) setRenewQuoting(false); });
+  };
+
+  // The backend derives the renewal's fee plan from the primary selected
+  // slot — keep the dropdown truthful by auto-selecting the matching plan.
+  const syncRenewPlanToSlots = (ids) => {
+    if (!ids.length) return;
+    const primary = renewSlots.find((s) => s.id === ids[0]);
+    if (!primary) return;
+    const match = feePlans.find(
+      (p) => p.start_minute === primary.start_minute && p.end_minute === primary.end_minute
+    );
+    if (match) {
+      setRenewForm((prev) => ({ ...prev, fee_plan_id: String(match.id) }));
+    }
+  };
+
+  const toggleRenewSlot = (slot) => {
+    if (slot.status !== "available" && !renewSlotIds.includes(slot.id)) return;
+    const next = renewSlotIds.includes(slot.id)
+      ? renewSlotIds.filter((id) => id !== slot.id)
+      : [...renewSlotIds, slot.id].sort((a, b) => a - b);
+    setRenewSlotIds(next);
+    syncRenewPlanToSlots(next);
+    requestRenewQuote(next);
+  };
+
   const handleRenewPlanChange = (planId) => {
     const plan = feePlans.find((p) => p.id === Number(planId));
     setRenewForm((prev) => ({
       ...prev,
       fee_plan_id: planId,
-      amount: plan ? String(plan.price) : "",
+      amount: renewAmountTouchedRef.current
+        ? prev.amount
+        : String(renewQuote ?? (plan ? plan.price : "")),
     }));
   };
 
@@ -135,9 +209,28 @@ function Students() {
     isValidDateInput(renewForm.end_date) &&
     renewForm.end_date > renewForm.start_date;
 
+  const handleSaveJoining = async () => {
+    if (!viewModal || !viewJoining || savingJoining) return;
+    setSavingJoining(true);
+    try {
+      await adminAPI.updateStudent(viewModal.id, { joining_date: viewJoining });
+      toast.success("Joining date updated");
+      fetchStudents();
+    } catch (err) {
+      toast.error(err?.message || "Failed to update joining date");
+    } finally {
+      setSavingJoining(false);
+    }
+  };
+
   const handleRenew = async () => {
     if (!renewModal || !renewForm.fee_plan_id || !renewForm.amount) return;
 
+    const renewAmountNum = Number(renewForm.amount);
+    if (!Number.isInteger(renewAmountNum) || renewAmountNum < 0) {
+      toast.error("Amount must be a whole number of rupees (0 or more)");
+      return;
+    }
     if (!renewForm.start_date || !isValidDateInput(renewForm.start_date)) {
       toast.error("Please select a valid Start Date");
       return;
@@ -153,7 +246,7 @@ function Students() {
 
     setRenewing(true);
     try {
-      const result = await adminAPI.renewMembership({
+      const payload = {
         student_id: renewModal.id,
         fee_plan_id: Number(renewForm.fee_plan_id),
         amount: Number(renewForm.amount),
@@ -161,7 +254,9 @@ function Students() {
         admin_note: renewForm.admin_note,
         start_date: renewForm.start_date,
         end_date: renewForm.end_date,
-      });
+      };
+      if (renewSlotIds.length) payload.slot_ids = renewSlotIds;
+      const result = await adminAPI.renewMembership(payload);
       toast.success(result.message);
       setRenewModal(null);
       fetchStudents();
@@ -236,7 +331,14 @@ function Students() {
                   </td>
                   <td data-label="Expiry">{s.membership_expiry ? new Date(s.membership_expiry).toLocaleDateString() : "\u2014"}</td>
                   <td data-label="Actions" className="actions-cell">
-                    <button className="btn btn-secondary btn-sm" onClick={() => setViewModal(s)} style={{ marginRight: 4 }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        setViewModal(s);
+                        setViewJoining(s.created_at ? toISODate(new Date(s.created_at)) : "");
+                      }}
+                      style={{ marginRight: 4 }}
+                    >
                       View
                     </button>
                     {isExpired(s) ? (
@@ -320,14 +422,28 @@ function Students() {
               <p><strong>Name:</strong> {viewModal.name}</p>
               <p><strong>Email:</strong> {viewModal.email}</p>
               <p><strong>Phone:</strong> {viewModal.phone || "\u2014"}</p>
+              <p style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <strong>Joining Date:</strong>
+                <input
+                  type="date"
+                  className="form-control"
+                  style={{ width: "auto", padding: "4px 8px" }}
+                  value={viewJoining}
+                  onChange={(e) => setViewJoining(e.target.value)}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={handleSaveJoining}
+                  disabled={!viewJoining || savingJoining}
+                >
+                  {savingJoining ? "Saving..." : "Save"}
+                </button>
+              </p>
               <p><strong>Membership:</strong> {viewModal.membership_status || "None"}</p>
               <p><strong>Plan:</strong> {viewModal.plan_name || "\u2014"}</p>
-              <p>
-                <strong>Current Membership:</strong>{" "}
-                {viewModal.membership_start_label || viewModal.membership_expiry_label
-                  ? `${viewModal.membership_start_label || "\u2014"} \u2192 ${viewModal.membership_expiry_label || "\u2014"}`
-                  : "\u2014"}
-              </p>
+              <p><strong>Membership Start:</strong> {viewModal.membership_start_label || "\u2014"}</p>
+              <p><strong>Membership Expiry:</strong> {viewModal.membership_expiry_label || "\u2014"}</p>
+              <p><strong>Selected Slots:</strong> {viewModal.current_slots || "\u2014"}</p>
               <p><strong>Seat:</strong> {viewModal.current_seat || "No Active Seat"}</p>
               <p><strong>Room:</strong> {viewModal.current_room || "\u2014"}</p>
               <p><strong>Booking Source:</strong> {viewModal.booking_source ? (viewModal.booking_source === "online" ? "Online" : "Offline") : "\u2014"}</p>
@@ -335,8 +451,13 @@ function Students() {
               <p><strong>Booked On:</strong> {viewModal.booked_at ? new Date(viewModal.booked_at).toLocaleDateString() : "\u2014"}</p>
               <p><strong>Booking Period:</strong> {viewModal.booking_start && viewModal.booking_end ? `${new Date(viewModal.booking_start).toLocaleDateString()} \u2013 ${new Date(viewModal.booking_end).toLocaleDateString()}` : "\u2014"}</p>
               <p><strong>Payment Status:</strong> {viewModal.payment_status ? viewModal.payment_status.charAt(0).toUpperCase() + viewModal.payment_status.slice(1) : "\u2014"}</p>
-              <p><strong>Expiry:</strong> {viewModal.membership_expiry_label || (viewModal.membership_expiry ? new Date(viewModal.membership_expiry).toLocaleDateString() : "\u2014")}</p>
-              <p><strong>Joining Date:</strong> {viewModal.joining_date || (viewModal.created_at ? new Date(viewModal.created_at).toLocaleDateString("en-IN") : "\u2014")}</p>
+              <p><strong>Payment Date:</strong> {viewModal.payment_date ? new Date(viewModal.payment_date).toLocaleDateString() : "\u2014"}</p>
+              <p>
+                <strong>Actual Payment Amount:</strong>{" "}
+                {viewModal.payment_amount != null
+                  ? `\u20B9${viewModal.payment_amount}${viewModal.payment_reference_amount != null && viewModal.payment_reference_amount !== viewModal.payment_amount ? ` (reference: \u20B9${viewModal.payment_reference_amount})` : ""}`
+                  : "\u2014"}
+              </p>
               <p><strong>Account:</strong> {viewModal.password_set === false ? "Password Not Set" : "Password Set"}</p>
 
               <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -364,6 +485,7 @@ function Students() {
                 </span>
               </p>
               <p><strong>Current Expiry:</strong> {renewModal.membership_expiry_label || (renewModal.membership_expiry ? new Date(renewModal.membership_expiry).toLocaleDateString("en-IN") : "\u2014")}</p>
+              <p><strong>Seat:</strong> {renewModal.current_seat ? `${renewModal.current_seat}${renewModal.current_room ? ` \u2014 ${renewModal.current_room}` : ""}` : "No seat on record"}</p>
 
               <div className="form-group" style={{ marginTop: 16 }}>
                 <label>Timing / Fee Plan</label>
@@ -381,16 +503,69 @@ function Students() {
                 </select>
               </div>
 
+              {renewModal.seat_id ? (
+                <div className="form-group" style={{ marginTop: 12 }}>
+                  <label>Available Slots</label>
+                  <div className="slot-options">
+                    {renewSlots.map((slot) => {
+                      const isSelected = renewSlotIds.includes(slot.id);
+                      const isBooked = slot.status !== "available" && !isSelected;
+                      return (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          className={`slot-option${isSelected ? " selected" : ""}${isBooked ? " unavailable" : ""}`}
+                          disabled={isBooked}
+                          onClick={() => toggleRenewSlot(slot)}
+                          title={slot.booked_by ? `Booked by ${slot.booked_by}` : slot.name}
+                        >
+                          <span className="slot-name">{slot.name}</span>
+                          <span className="slot-status">
+                            {isSelected ? "Selected" : slot.booked_by ? `Booked — ${slot.booked_by}` : isBooked ? "Booked" : "Available"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {renewSlots.length === 0 && (
+                    <div className="slot-empty">Loading availability&hellip;</div>
+                  )}
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 6 }}>
+                    {renewSlotIds.length
+                      ? `Selected Slots: ${renewSlots.filter((s) => renewSlotIds.includes(s.id)).map((s) => s.name).join(", ")}`
+                      : "No slots selected — the seat/day is not assumed to be fully booked."}
+                  </div>
+                </div>
+              ) : (
+                <div className="form-group" style={{ marginTop: 12 }}>
+                  <label>Slots</label>
+                  <div className="slot-empty">No seat on record — assign a seat to select slots.</div>
+                </div>
+              )}
+
               <div className="form-group" style={{ marginTop: 12 }}>
-                <label>Amount (₹)</label>
+                <label>Amount (₹) — Final amount charged</label>
                 <input
                   type="number"
                   value={renewForm.amount}
-                  onChange={(e) => setRenewForm((prev) => ({ ...prev, amount: e.target.value }))}
+                  onChange={(e) => {
+                    renewAmountTouchedRef.current = true;
+                    setRenewForm((prev) => ({ ...prev, amount: e.target.value }));
+                  }}
                   className="form-control"
                   min="1"
-                  readOnly={!!renewForm.fee_plan_id}
                 />
+                <small style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  {renewSlotIds.length
+                    ? renewQuoting
+                      ? "Calculating reference price\u2026"
+                      : renewQuote !== null
+                        ? `Default / reference price: ₹${renewQuote} — editable`
+                        : "Reference price unavailable — the amount you enter is final."
+                    : renewForm.fee_plan_id && renewQuote === null
+                      ? `Default / reference price: ₹${feePlans.find((p) => p.id === Number(renewForm.fee_plan_id))?.price ?? "\u2014"} — editable`
+                      : "The amount you enter is the final charged amount."}
+                </small>
               </div>
 
               <div className="form-group" style={{ marginTop: 12 }}>

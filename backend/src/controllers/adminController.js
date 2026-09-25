@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
-import { quoteSlots, getSeatSlotAvailability } from "../services/pricing.js";
+import { quoteSlots, getSeatSlotAvailability, resolveFeePlanForSlots } from "../services/pricing.js";
 
 // Strict YYYY-MM-DD calendar-date validation (rejects e.g. 2026-02-30 or 2026-13-01).
 function isValidDateString(value) {
@@ -88,7 +88,10 @@ export async function getStudents(_req, res) {
         s.seat_number as current_seat, s.id as seat_id, r.name as current_room,
         b.id as booking_id, b.booking_source, b.status as booking_status,
         b.booked_at, b.booking_start, b.booking_end,
-        lp.status as payment_status, lp.has_screenshot, lp.utr_number
+        NULLIF(bsl.slot_names, '') as current_slots,
+        lp.status as payment_status, lp.has_screenshot, lp.utr_number,
+        lp.amount as payment_amount, lp.reference_amount as payment_reference_amount,
+        lp.payment_date as payment_date
        FROM users u
        LEFT JOIN LATERAL (
          SELECT CASE
@@ -118,17 +121,54 @@ export async function getStudents(_req, res) {
        LEFT JOIN seats s ON b.seat_id = s.id
        LEFT JOIN rooms r ON s.room_id = r.id
        LEFT JOIN LATERAL (
-         SELECT p.status, p.utr_number,
-                (p.screenshot_data IS NOT NULL OR p.screenshot_url <> '') as has_screenshot
-         FROM payments p
-         WHERE p.user_id = u.id
-         ORDER BY p.created_at DESC, p.id DESC
-         LIMIT 1
-       ) lp ON true
+         SELECT COALESCE(string_agg(sl.name, ', ' ORDER BY sl.slot_number), '') as slot_names
+         FROM booking_slots bs
+         JOIN slots sl ON sl.id = bs.slot_id
+         WHERE bs.booking_id = b.id
+       ) bsl ON true
+         LEFT JOIN LATERAL (
+           SELECT p.status, p.utr_number, p.amount, p.reference_amount, p.payment_date,
+                  (p.screenshot_data IS NOT NULL OR p.screenshot_url <> '') as has_screenshot
+           FROM payments p
+           WHERE p.user_id = u.id
+           ORDER BY p.created_at DESC, p.id DESC
+           LIMIT 1
+         ) lp ON true
        WHERE u.role = 'student'
        ORDER BY u.created_at DESC`
     );
     res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+// Admin edits a student's JOINING date from the Student Details modal.
+// Only users.created_at changes — membership and payment timestamps are
+// historical records and are never modified.
+export async function updateStudent(req, res) {
+  try {
+    const { id } = req.params;
+    const { joining_date } = req.body;
+
+    if (joining_date === undefined || joining_date === null || joining_date === "") {
+      return res.status(400).json({ error: "joining_date (YYYY-MM-DD) is required" });
+    }
+    if (!isValidDateString(joining_date)) {
+      return res.status(400).json({ error: "joining_date must be a valid date in YYYY-MM-DD format" });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE users SET created_at = $1::date
+       WHERE id = $2 AND role = 'student'
+       RETURNING id, created_at, TO_CHAR(created_at, 'DD FMMonth YYYY') as joining_date`,
+      [joining_date, id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Student not found" });
+    }
+    res.json({ message: "Joining date updated", ...rows[0] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -463,18 +503,19 @@ export async function createOfflineBooking(req, res) {
     const wantsSlots =
       slot_ids !== undefined && slot_ids !== null && slot_ids !== "";
 
-    if (!seat_id || !fee_plan_id || !payment_method || (!wantsSlots && !amount)) {
-      return res.status(400).json({ error: "seat_id, fee_plan_id, amount (or slot_ids), and payment_method are required" });
+    if (!seat_id || !payment_method || amount === undefined || amount === null || amount === "") {
+      return res.status(400).json({ error: "seat_id, amount, and payment_method are required" });
+    }
+    if (!wantsSlots && !fee_plan_id) {
+      return res.status(400).json({ error: "fee_plan_id is required when no slots are selected" });
     }
 
-    // With slot selection the amount is always system-calculated; the legacy
-    // manual amount path is kept for plan-only offline bookings.
-    let amountNum = null;
-    if (!wantsSlots) {
-      amountNum = Number(amount);
-      if (!Number.isFinite(amountNum) || amountNum <= 0) {
-        return res.status(400).json({ error: "amount must be a positive number" });
-      }
+    // The admin-entered amount is the FINAL charged amount for offline
+    // bookings (custom pricing). Must be a whole number of rupees >= 0;
+    // the configured/default price is stored separately as the reference price.
+    const amountNum = Number(amount);
+    if (!Number.isFinite(amountNum) || !Number.isInteger(amountNum) || amountNum < 0) {
+      return res.status(400).json({ error: "amount must be a whole number of rupees (0 or more)" });
     }
 
     const allowedMethods = new Set(["cash", "upi", "other"]);
@@ -556,15 +597,21 @@ export async function createOfflineBooking(req, res) {
       return res.status(400).json({ error: "Student already has an active or pending membership" });
     }
 
-    const { rows: feePlanRows } = await client.query(
-      "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
-      [fee_plan_id]
-    );
-    if (feePlanRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Fee plan not found or inactive" });
+    // Legacy plan-based bookings require an explicit active plan. For slot
+    // bookings the plan is derived from the selection further below, so the
+    // client-supplied fee_plan_id is ignored (and never required).
+    let feePlan = null;
+    if (!wantsSlots) {
+      const { rows: feePlanRows } = await client.query(
+        "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
+        [fee_plan_id]
+      );
+      if (feePlanRows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Fee plan not found or inactive" });
+      }
+      feePlan = feePlanRows[0];
     }
-    const feePlan = feePlanRows[0];
 
     const { rows: seatRows } = await client.query(
       "SELECT * FROM seats WHERE id = $1 FOR UPDATE",
@@ -579,8 +626,12 @@ export async function createOfflineBooking(req, res) {
       return res.status(400).json({ error: "Seat is disabled" });
     }
 
-    // Slot-based offline booking: validate the selection and calculate the
-    // amount from the CURRENT admin-configured pricing (never client-supplied).
+    // Slot-based offline booking: validate the selection and any slot
+    // conflicts (backend is the final authority). The configured price for
+    // the selection becomes the REFERENCE price; the admin-entered amount
+    // above remains the FINAL charged amount (custom pricing). The membership
+    // fee plan is derived from the primary selected slot.
+    let referenceAmount = feePlan ? Number(feePlan.price) : 0;
     let selectedSlots = null;
     if (wantsSlots) {
       const quoted = await quoteSlots(slot_ids, client);
@@ -589,7 +640,14 @@ export async function createOfflineBooking(req, res) {
         return res.status(400).json({ error: quoted.error });
       }
       selectedSlots = quoted.slots;
-      amountNum = quoted.price;
+      referenceAmount = quoted.price;
+      feePlan = await resolveFeePlanForSlots(client, selectedSlots);
+      if (!feePlan) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "No matching timing plan is configured for the selected slots",
+        });
+      }
 
       const availability = await getSeatSlotAvailability(client, Number(seat_id));
       const bookedIds = new Set(
@@ -636,13 +694,13 @@ export async function createOfflineBooking(req, res) {
     const { rows: membershipRows } = await client.query(
       `INSERT INTO memberships (user_id, fee_plan_id, status, start_date, end_date)
        VALUES ($1, $2, 'active', $3, $4) RETURNING *`,
-      [student.id, fee_plan_id, membershipStart, membershipEnd]
+      [student.id, feePlan.id, membershipStart, membershipEnd]
     );
 
     const { rows: bookingRows } = await client.query(
       `INSERT INTO bookings (user_id, seat_id, fee_plan_id, booking_start, booking_end, status, booking_source)
        VALUES ($1, $2, $3, $4, $5, 'active', 'offline') RETURNING *`,
-      [student.id, seat_id, fee_plan_id, membershipStart, membershipEnd]
+      [student.id, seat_id, feePlan.id, membershipStart, membershipEnd]
     );
 
     // Booking -> Slot relationship for slot-based offline bookings
@@ -662,8 +720,8 @@ export async function createOfflineBooking(req, res) {
 
     const paymentType = payment_method === "cash" ? "offline_cash" : payment_method === "upi" ? "offline_upi" : "offline_other";
     const { rows: paymentRows } = await client.query(
-      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type, payment_date, receipt_number, admin_id, admin_note, payment_mode, amount_paid)
-       VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type, payment_date, receipt_number, admin_id, admin_note, payment_mode, amount_paid, reference_amount)
+       VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         student.id,
         membershipRows[0].id,
@@ -676,6 +734,7 @@ export async function createOfflineBooking(req, res) {
         notes || "",
         payment_method,
         amountNum,
+        referenceAmount,
       ]
     );
 
@@ -1254,10 +1313,16 @@ export async function updateLostFound(req, res) {
 export async function renewMembership(req, res) {
   const client = await pool.connect();
   try {
-    const { student_id, fee_plan_id, amount, payment_method, admin_note, start_date, end_date } = req.body;
+    const { student_id, fee_plan_id, amount, payment_method, admin_note, start_date, end_date, slot_ids } = req.body;
 
-    if (!student_id || !fee_plan_id || !amount || !payment_method) {
-      return res.status(400).json({ error: "student_id, fee_plan_id, amount, and payment_method are required" });
+    const wantsSlots =
+      slot_ids !== undefined && slot_ids !== null && slot_ids !== "";
+
+    if (!student_id || amount === undefined || amount === null || amount === "" || !payment_method) {
+      return res.status(400).json({ error: "student_id, amount, and payment_method are required" });
+    }
+    if (!wantsSlots && !fee_plan_id) {
+      return res.status(400).json({ error: "fee_plan_id is required when no slots are selected" });
     }
 
     if (!start_date || !end_date) {
@@ -1276,8 +1341,8 @@ export async function renewMembership(req, res) {
       return res.status(400).json({ error: "payment_method must be 'cash' or 'upi'" });
     }
 
-    if (typeof amount !== "number" || amount <= 0) {
-      return res.status(400).json({ error: "Amount must be a positive number" });
+    if (typeof amount !== "number" || !Number.isFinite(amount) || !Number.isInteger(amount) || amount < 0) {
+      return res.status(400).json({ error: "Amount must be a whole number of rupees (0 or more)" });
     }
 
     await client.query("BEGIN");
@@ -1300,13 +1365,42 @@ export async function renewMembership(req, res) {
       return res.status(400).json({ error: "Student already has an active or pending membership" });
     }
 
-    const { rows: planRows } = await client.query(
-      "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
-      [fee_plan_id]
-    );
-    if (planRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Fee plan not found or inactive" });
+    // Legacy renewals require an explicit active plan. For slot renewals the
+    // plan is DERIVED from the primary selected slot (client fee_plan_id is
+    // ignored), so the stored timing label always matches the booked slots.
+    let feePlan = null;
+    if (!wantsSlots) {
+      const { rows: planRows } = await client.query(
+        "SELECT * FROM fee_plans WHERE id = $1 AND is_active = true",
+        [fee_plan_id]
+      );
+      if (planRows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Fee plan not found or inactive" });
+      }
+      feePlan = planRows[0];
+    }
+
+    // Optional slot selection for the renewal. The configured price for the
+    // selection becomes the REFERENCE price; the admin-entered amount stays
+    // the FINAL charged amount (custom pricing).
+    let selectedSlots = null;
+    let referenceAmount = feePlan ? Number(feePlan.price) : 0;
+    if (wantsSlots) {
+      const quoted = await quoteSlots(slot_ids, client);
+      if (!quoted.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: quoted.error });
+      }
+      selectedSlots = quoted.slots;
+      referenceAmount = quoted.price;
+      feePlan = await resolveFeePlanForSlots(client, selectedSlots);
+      if (!feePlan) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "No matching timing plan is configured for the selected slots",
+        });
+      }
     }
 
     // Admin-selected dates are stored exactly as chosen. They are passed as
@@ -1317,20 +1411,41 @@ export async function renewMembership(req, res) {
 
     const { rows: membershipRows } = await client.query(
       `INSERT INTO memberships (user_id, fee_plan_id, status, start_date, end_date)
-       VALUES ($1, $2, 'active', $3::date, $4::date) RETURNING *`,
-      [student_id, fee_plan_id, startDate, endDate]
+       VALUES ($1, $2, 'active', $3, $4) RETURNING *`,
+      [student_id, feePlan.id, startDate, endDate]
     );
 
-    // Find the student's previous seat from their most recent cancelled booking
-    const { rows: prevBookingRows } = await client.query(
-      `SELECT b.seat_id, s.seat_number, r.name as room_name
-       FROM bookings b
-       JOIN seats s ON b.seat_id = s.id
-       JOIN rooms r ON s.room_id = r.id
-       WHERE b.user_id = $1 AND b.status = 'cancelled'
-       ORDER BY b.booked_at DESC LIMIT 1`,
-      [student_id]
-    );
+    // Find the seat to re-book. The legacy path uses the student's most
+    // recent CANCELLED booking. With slot selection we mirror the seat the
+    // admin UI shows (active > pending > latest booking — same as getStudents)
+    // so the availability the admin sees matches what is validated here.
+    let prevBookingRows;
+    if (wantsSlots) {
+      ({ rows: prevBookingRows } = await client.query(
+        `SELECT b.seat_id, s.seat_number, r.name as room_name
+         FROM bookings b
+         JOIN seats s ON b.seat_id = s.id
+         JOIN rooms r ON s.room_id = r.id
+         WHERE b.user_id = $1
+         ORDER BY (b.status = 'active') DESC, (b.status = 'pending') DESC, b.booked_at DESC, b.id DESC
+         LIMIT 1`,
+        [student_id]
+      ));
+      if (prevBookingRows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "No seat on record for this student. Assign a seat before selecting slots." });
+      }
+    } else {
+      ({ rows: prevBookingRows } = await client.query(
+        `SELECT b.seat_id, s.seat_number, r.name as room_name
+         FROM bookings b
+         JOIN seats s ON b.seat_id = s.id
+         JOIN rooms r ON s.room_id = r.id
+         WHERE b.user_id = $1 AND b.status = 'cancelled'
+         ORDER BY b.booked_at DESC LIMIT 1`,
+        [student_id]
+      ));
+    }
 
     let newBooking = null;
     if (prevBookingRows.length > 0) {
@@ -1345,14 +1460,22 @@ export async function renewMembership(req, res) {
         [prevSeat.seat_id]
       );
 
-      const { rows: planCheck } = await client.query(
-        "SELECT * FROM fee_plans WHERE id = $1",
-        [fee_plan_id]
-      );
-      const feePlan = planCheck[0];
-
       let seatAvailable = activeSeatBookings.length < 2;
-      if (seatAvailable && activeSeatBookings.length === 1) {
+      if (seatAvailable && selectedSlots) {
+        // Per-slot conflict check — the backend is the final authority
+        // (availability ignores already-expired bookings).
+        const availability = await getSeatSlotAvailability(client, prevSeat.seat_id);
+        const bookedIds = new Set(
+          availability.filter((s) => s.status === "booked").map((s) => s.id)
+        );
+        const conflictSlot = selectedSlots.find((s) => bookedIds.has(s.id));
+        if (conflictSlot) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `Selected slot is already booked for this seat: ${conflictSlot.name}`,
+          });
+        }
+      } else if (seatAvailable && activeSeatBookings.length === 1) {
         const existing = activeSeatBookings[0];
         const hasOverlap =
           existing.is_24_hour ||
@@ -1365,17 +1488,30 @@ export async function renewMembership(req, res) {
         const { rows: bookingRows } = await client.query(
           `INSERT INTO bookings (user_id, seat_id, fee_plan_id, booking_start, booking_end, status, booking_source)
            VALUES ($1, $2, $3, $4::date, $5::date, 'active', 'offline') RETURNING *`,
-          [student_id, prevSeat.seat_id, fee_plan_id, startDate, endDate]
+          [student_id, prevSeat.seat_id, feePlan.id, startDate, endDate]
         );
         newBooking = bookingRows[0];
+        // Remember exactly which slots this renewal booking occupies
+        if (selectedSlots) {
+          for (const slot of selectedSlots) {
+            await client.query(
+              "INSERT INTO booking_slots (booking_id, slot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+              [newBooking.id, slot.id]
+            );
+          }
+        }
         await client.query("UPDATE seats SET status = 'booked' WHERE id = $1", [prevSeat.seat_id]);
+      } else if (selectedSlots) {
+        // Never silently drop the admin's selected slots.
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Seat is full — the selected slots could not be booked" });
       }
     }
 
     const paymentType = payment_method === "cash" ? "offline_cash" : "offline_upi";
     const { rows: paymentRows } = await client.query(
-      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type, payment_date, receipt_number, admin_id, admin_note, payment_mode, amount_paid)
-       VALUES ($1, $2, $3, $4, 'completed', $5, CURRENT_DATE, $6, $7, $8, $9, $10) RETURNING *`,
+      `INSERT INTO payments (user_id, membership_id, amount, method, status, payment_type, payment_date, receipt_number, admin_id, admin_note, payment_mode, amount_paid, reference_amount)
+       VALUES ($1, $2, $3, $4, 'completed', $5, CURRENT_DATE, $6, $7, $8, $9, $10, $11) RETURNING *`,
       [
         student_id,
         membershipRows[0].id,
@@ -1387,6 +1523,7 @@ export async function renewMembership(req, res) {
         admin_note || "",
         payment_method,
         amount,
+        referenceAmount,
       ]
     );
 
@@ -1396,13 +1533,16 @@ export async function renewMembership(req, res) {
           return idx >= 0 ? `${prevBookingRows[idx].seat_number}, ${prevBookingRows[idx].room_name}` : "";
         })()
       : "";
+    const slotsLabel = selectedSlots
+      ? ` Slots: ${selectedSlots.map((s) => s.name).join(", ")}.`
+      : "";
 
     await client.query(
       "INSERT INTO notifications (user_id, title, message) VALUES ($1, $2, $3)",
       [
         student_id,
         "Membership Renewed",
-        `Your membership has been renewed successfully. Valid until ${formatDateString(endDate)}.${seatLabel ? ` Seat: ${seatLabel}.` : ""}`,
+        `Your membership has been renewed successfully. Valid until ${formatDateString(endDate)}.${seatLabel ? ` Seat: ${seatLabel}.` : ""}${slotsLabel}`,
       ]
     );
 

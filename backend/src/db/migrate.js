@@ -174,13 +174,16 @@ const createTables = [
   )`,
 ];
 
+// The four timing plans. Legacy plans (24 Hours, 7:00 AM to 11:00 PM) are
+// removed from fresh seeds and deactivated (NOT deleted) on existing
+// databases by the idempotent ALTER block below, so historical
+// memberships/payments keep their original labels.
 const seedFeePlans = `
 INSERT INTO fee_plans (name, start_minute, end_minute, is_24_hour, price) VALUES
-  ('24 Hours', 0, 1440, true, 1500),
-  ('7:00 AM to 11:00 PM', 420, 1380, false, 1200),
   ('5:00 AM to 10:00 AM', 300, 600, false, 500),
   ('10:00 AM to 6:30 PM', 600, 1110, false, 1000),
-  ('7:00 PM to 12:00 AM', 1140, 1440, false, 500);
+  ('7:00 PM to 12:00 AM', 1140, 1440, false, 500),
+  ('12:00 AM to 5:00 AM', 0, 300, false, 500);
 `;
 
 const seedRooms = `
@@ -446,12 +449,32 @@ async function migrate() {
       ON CONFLICT (slot_number) DO NOTHING`,
     `INSERT INTO slot_combo_prices (slots_key, price) VALUES
       ('1+2', 1100),
-      ('2+3', 1100),
+      ('2+3', 1200),
       ('1+2+3', 1200),
       ('1+2+3+4', 1500),
       ('1+3', 800),
       ('3+4', 800)
       ON CONFLICT (slots_key) DO NOTHING`,
+    // 2+3 combo correction: full-day + late-evening = 1200 (was 1100 on older
+    // databases). Guarded so admin-adjusted prices are never overwritten.
+    `UPDATE slot_combo_prices SET price = 1200 WHERE slots_key = '2+3' AND price = 1100`,
+    // Reference/default price captured at transaction time (admin flows may
+    // charge a different final amount). Nullable for legacy payment rows.
+    `ALTER TABLE payments ADD COLUMN IF NOT EXISTS reference_amount INTEGER`,
+    // --- Four timing plans (replace the legacy five-plan setup) ---
+    // 1) Add the missing 12:00 AM - 5:00 AM plan (skip when a 0-300 plan exists).
+    `INSERT INTO fee_plans (name, start_minute, end_minute, is_24_hour, price)
+     SELECT '12:00 AM to 5:00 AM', 0, 300, false, 500
+     WHERE NOT EXISTS (SELECT 1 FROM fee_plans WHERE start_minute = 0 AND end_minute = 300)`,
+    // 2) Deactivate every plan outside the four timing windows (24 Hours and
+    //    7:00 AM to 11:00 PM). Rows are KEPT so historical memberships and
+    //    payments retain their original plan labels. Idempotent.
+    `UPDATE fee_plans SET is_active = false
+      WHERE is_active = true
+        AND NOT (start_minute = 300 AND end_minute = 600)
+        AND NOT (start_minute = 600 AND end_minute = 1110)
+        AND NOT (start_minute = 1140 AND end_minute = 1440)
+        AND NOT (start_minute = 0 AND end_minute = 300)`,
     // Performance indexes for hot query paths
     `CREATE INDEX IF NOT EXISTS idx_bookings_user_status ON bookings(user_id, status)`,
     `CREATE INDEX IF NOT EXISTS idx_bookings_seat_status ON bookings(seat_id, status)`,
