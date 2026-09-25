@@ -2,6 +2,25 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
 
+// Strict YYYY-MM-DD calendar-date validation (rejects e.g. 2026-02-30 or 2026-13-01).
+function isValidDateString(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+// Formats a 'YYYY-MM-DD' string as a local calendar date (no timezone conversion),
+// so 2026-10-10 can never render as 2026-10-09.
+function formatDateString(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("en-IN");
+}
+
 export async function getDashboard(_req, res) {
   try {
     const [
@@ -60,8 +79,11 @@ export async function getStudents(_req, res) {
     // Booking prefers active > pending > latest; payment is the student's latest payment.
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.created_at, u.is_active,
+        TO_CHAR(u.created_at, 'DD FMMonth YYYY') as joining_date,
         COALESCE(u.password_set, true) as password_set,
-        lm.status as membership_status, lm.plan_name, lm.membership_expiry, lm.membership_id,
+        lm.status as membership_status, lm.plan_name,
+        lm.membership_start, lm.membership_expiry,
+        lm.membership_start_label, lm.membership_expiry_label, lm.membership_id,
         s.seat_number as current_seat, s.id as seat_id, r.name as current_room,
         b.id as booking_id, b.booking_source, b.status as booking_status,
         b.booked_at, b.booking_start, b.booking_end,
@@ -72,7 +94,11 @@ export async function getStudents(_req, res) {
                   WHEN m.end_date IS NOT NULL AND m.end_date < CURRENT_DATE THEN 'expired'
                   ELSE m.status
                 END as status,
-                fp.name as plan_name, m.end_date as membership_expiry, m.id as membership_id
+                fp.name as plan_name,
+                m.start_date as membership_start, m.end_date as membership_expiry,
+                TO_CHAR(m.start_date, 'DD FMMonth YYYY') as membership_start_label,
+                TO_CHAR(m.end_date, 'DD FMMonth YYYY') as membership_expiry_label,
+                m.id as membership_id
          FROM memberships m
          LEFT JOIN fee_plans fp ON m.fee_plan_id = fp.id
          WHERE m.user_id = u.id
@@ -1183,10 +1209,22 @@ export async function updateLostFound(req, res) {
 export async function renewMembership(req, res) {
   const client = await pool.connect();
   try {
-    const { student_id, fee_plan_id, amount, payment_method, admin_note } = req.body;
+    const { student_id, fee_plan_id, amount, payment_method, admin_note, start_date, end_date } = req.body;
 
     if (!student_id || !fee_plan_id || !amount || !payment_method) {
       return res.status(400).json({ error: "student_id, fee_plan_id, amount, and payment_method are required" });
+    }
+
+    if (!start_date || !end_date) {
+      return res.status(400).json({ error: "start_date and end_date are required" });
+    }
+
+    if (!isValidDateString(start_date) || !isValidDateString(end_date)) {
+      return res.status(400).json({ error: "start_date and end_date must be valid dates in YYYY-MM-DD format" });
+    }
+
+    if (end_date <= start_date) {
+      return res.status(400).json({ error: "New Expiry Date must be after Start Date" });
     }
 
     if (!["cash", "upi"].includes(payment_method)) {
@@ -1226,13 +1264,15 @@ export async function renewMembership(req, res) {
       return res.status(404).json({ error: "Fee plan not found or inactive" });
     }
 
-    const startDate = new Date();
-    const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + 1);
+    // Admin-selected dates are stored exactly as chosen. They are passed as
+    // 'YYYY-MM-DD' strings (never JS Date objects) so Postgres stores the DATE
+    // values verbatim with no timezone conversion.
+    const startDate = start_date;
+    const endDate = end_date;
 
     const { rows: membershipRows } = await client.query(
       `INSERT INTO memberships (user_id, fee_plan_id, status, start_date, end_date)
-       VALUES ($1, $2, 'active', $3, $4) RETURNING *`,
+       VALUES ($1, $2, 'active', $3::date, $4::date) RETURNING *`,
       [student_id, fee_plan_id, startDate, endDate]
     );
 
@@ -1279,7 +1319,7 @@ export async function renewMembership(req, res) {
       if (seatAvailable) {
         const { rows: bookingRows } = await client.query(
           `INSERT INTO bookings (user_id, seat_id, fee_plan_id, booking_start, booking_end, status, booking_source)
-           VALUES ($1, $2, $3, $4, $5, 'active', 'offline') RETURNING *`,
+           VALUES ($1, $2, $3, $4::date, $5::date, 'active', 'offline') RETURNING *`,
           [student_id, prevSeat.seat_id, fee_plan_id, startDate, endDate]
         );
         newBooking = bookingRows[0];
@@ -1317,7 +1357,7 @@ export async function renewMembership(req, res) {
       [
         student_id,
         "Membership Renewed",
-        `Your membership has been renewed successfully. Valid until ${endDate.toLocaleDateString("en-IN")}.${seatLabel ? ` Seat: ${seatLabel}.` : ""}`,
+        `Your membership has been renewed successfully. Valid until ${formatDateString(endDate)}.${seatLabel ? ` Seat: ${seatLabel}.` : ""}`,
       ]
     );
 
