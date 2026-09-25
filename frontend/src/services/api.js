@@ -77,6 +77,14 @@ export const studentAPI = {
       body: JSON.stringify({ fee_plan_id }),
     }),
   getSeats: () => request("/student/seats"),
+  // Per-seat access-slot availability (status only, no prices)
+  getSeatSlots: (seatId) => request(`/student/seats/${seatId}/slots`),
+  // Backend-computed price for a slot selection — the client never sends an amount
+  quoteSlots: (slotIds) =>
+    request("/student/slots/quote", {
+      method: "POST",
+      body: JSON.stringify({ slot_ids: slotIds }),
+    }),
   bookSeat: (seat_id, fee_plan_id) =>
     request("/student/book-seat", {
       method: "POST",
@@ -86,10 +94,13 @@ export const studentAPI = {
     request(`/student/booking/${booking_id}`, { method: "DELETE" }),
   getPaymentHistory: () => request("/student/payment-history"),
   // Single atomic call: membership (pending) + payment (UTR + screenshot) + booking (pending)
-  submitPayment: ({ fee_plan_id, seat_id, utr_number, screenshot }) => {
+  submitPayment: ({ fee_plan_id, seat_id, slot_ids, utr_number, screenshot }) => {
     const formData = new FormData();
     formData.append("fee_plan_id", fee_plan_id);
     formData.append("seat_id", seat_id);
+    if (slot_ids && slot_ids.length) {
+      formData.append("slot_ids", JSON.stringify(slot_ids));
+    }
     formData.append("utr_number", utr_number);
     formData.append("screenshot", screenshot);
     const token = localStorage.getItem("token");
@@ -238,5 +249,28 @@ export const adminAPI = {
     request("/admin/renew-membership", {
       method: "POST",
       body: JSON.stringify(data),
+    }),
+  // Slot booking + admin-controlled dynamic pricing
+  getSlotPricing: () => request("/admin/slots"),
+  updateSlotPrice: (id, price) =>
+    request(`/admin/slots/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ price }),
+    }),
+  updateSlotStatus: (id, is_active) =>
+    request(`/admin/slots/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ is_active }),
+    }),
+  updateSlotComboPrice: (id, price) =>
+    request(`/admin/slot-combos/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ price }),
+    }),
+  getSeatSlots: (seatId) => request(`/admin/seats/${seatId}/slots`),
+  quoteSlots: (slotIds) =>
+    request("/admin/slots/quote", {
+      method: "POST",
+      body: JSON.stringify({ slot_ids: slotIds }),
     }),
 };

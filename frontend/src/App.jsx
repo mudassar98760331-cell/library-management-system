@@ -27,6 +27,7 @@ import StudentHelpDesk from "./pages/student/HelpDesk";
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminStudents from "./pages/admin/Students";
 import AdminSeats from "./pages/admin/Seats";
+import AdminPricing from "./pages/admin/Pricing";
 import AdminMemberships from "./pages/admin/Memberships";
 import AdminPayments from "./pages/admin/Payments";
 import AdminLostFound from "./pages/admin/LostFound";
@@ -96,6 +97,7 @@ function App() {
               <Route path="/admin/dashboard" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminDashboard /></AdminLayout></ProtectedRoute>} />
               <Route path="/admin/students" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminStudents /></AdminLayout></ProtectedRoute>} />
               <Route path="/admin/seats" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminSeats /></AdminLayout></ProtectedRoute>} />
+              <Route path="/admin/pricing" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminPricing /></AdminLayout></ProtectedRoute>} />
               <Route path="/admin/memberships" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminMemberships /></AdminLayout></ProtectedRoute>} />
               <Route path="/admin/payments" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminPayments /></AdminLayout></ProtectedRoute>} />
               <Route path="/admin/lost-found" element={<ProtectedRoute role="admin"><AdminLayout sidebarOpen={sidebarOpen} onSidebarClose={closeSidebar}><AdminLostFound /></AdminLayout></ProtectedRoute>} />

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { studentAPI } from "../../services/api";
 import { useToast } from "../../context/useToast";
@@ -41,6 +41,13 @@ function SeatBooking() {
   const [seats, setSeats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedSeat, setSelectedSeat] = useState(null);
+  const [seatSlots, setSeatSlots] = useState([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [selectedSlots, setSelectedSlots] = useState([]);
+  const [quote, setQuote] = useState(null);
+  const [quoting, setQuoting] = useState(false);
+  const slotsRequestRef = useRef(0);
+  const quoteRequestRef = useRef(0);
 
   useEffect(() => {
     if (!plan) { navigate("/student/membership"); return; }
@@ -53,16 +60,80 @@ function SeatBooking() {
     const st = getSeatStatus(num);
     return `seat ${st}`;
   };
-  const canClick = (num) => getSeatStatus(num) === "available";
+  // Seat colors reflect overall occupancy, but any existing seat may still have
+  // free time slots — so only disabled/missing seats are blocked from clicking.
+  // Per-slot availability is fetched when the seat is clicked.
+  const canClick = (num) => {
+    const seat = seats.find((s) => s.seat_number === num);
+    return !!seat && seat.status !== "disabled";
+  };
+
+  const handleSeatClick = (num) => {
+    const seat = seats.find((s) => s.seat_number === num);
+    if (!seat || seat.status === "disabled") return;
+    setSelectedSeat(seat);
+    setSelectedSlots([]);
+    setSeatSlots([]);
+    ++quoteRequestRef.current;
+    setQuote(null);
+    setQuoting(false);
+    const reqId = ++slotsRequestRef.current;
+    setSlotsLoading(true);
+    studentAPI.getSeatSlots(seat.id)
+      .then((data) => {
+        if (reqId === slotsRequestRef.current) setSeatSlots(data.slots || []);
+      })
+      .catch(() => {
+        if (reqId === slotsRequestRef.current) {
+          setSeatSlots([]);
+          toast.error("Failed to load slot availability");
+        }
+      })
+      .finally(() => {
+        if (reqId === slotsRequestRef.current) setSlotsLoading(false);
+      });
+  };
+
+  // Price comes only from the backend quote, and only after a selection exists.
+  // The request id guard makes sure a stale response never overwrites a newer one.
+  const requestQuote = (slotsArr) => {
+    const reqId = ++quoteRequestRef.current;
+    if (!slotsArr.length) {
+      setQuote(null);
+      setQuoting(false);
+      return;
+    }
+    setQuoting(true);
+    studentAPI.quoteSlots(slotsArr.map((s) => s.id))
+      .then((d) => { if (reqId === quoteRequestRef.current) setQuote(d.price); })
+      .catch(() => {
+        if (reqId === quoteRequestRef.current) {
+          setQuote(null);
+          toast.error("Could not calculate the price");
+        }
+      })
+      .finally(() => { if (reqId === quoteRequestRef.current) setQuoting(false); });
+  };
+
+  const toggleSlot = (slot) => {
+    if (slot.status !== "available") return;
+    const next = selectedSlots.some((s) => s.id === slot.id)
+      ? selectedSlots.filter((s) => s.id !== slot.id)
+      : [...selectedSlots, slot].sort((a, b) => a.slot_number - b.slot_number);
+    setSelectedSlots(next);
+    requestQuote(next);
+  };
 
   const handleContinue = () => {
     if (!selectedSeat) { toast.error("Please select a seat"); return; }
-    navigate("/student/payment", { state: { plan, seat: selectedSeat } });
+    if (!selectedSlots.length) { toast.error("Please select at least one time slot"); return; }
+    if (quote === null || quoting) { toast.error("Price is still being calculated"); return; }
+    navigate("/student/payment", { state: { plan, seat: selectedSeat, slots: selectedSlots, quote } });
   };
 
   const renderSeat = (num) => (
     <button key={num} className={getSeatClass(num)}
-      onClick={() => canClick(num) && setSelectedSeat(seats.find((s) => s.seat_number === num))}
+      onClick={() => canClick(num) && handleSeatClick(num)}
       title={`Seat ${seatDisplay(num)}`} disabled={!canClick(num) && selectedSeat?.seat_number !== num}>
       {seatDisplay(num)}
     </button>
@@ -145,7 +216,7 @@ function SeatBooking() {
           <h1>&#128186; Select Your Seat</h1>
           <div className="subtitle">
             {plan && <span>Plan: <strong>{plan.name}</strong> &mdash; </span>}
-            Choose from 43 dedicated seats. Real room layout as per Lakshya Library.
+            Choose your seat, then pick one or more time slots. Real room layout as per Lakshya Library.
           </div>
         </div>
       </div>
@@ -181,8 +252,54 @@ function SeatBooking() {
             <h3>Seat {seatDisplay(selectedSeat.seat_number)}</h3>
             <p>Room: {selectedSeat.room_name} &mdash; Plan: {plan?.name}</p>
           </div>
-          <button className="btn btn-primary" onClick={handleContinue}>
-            Continue to Payment &#8594;
+          <div className="slot-picker">
+            <div className="slot-picker-title">
+              Select Time Slots
+              {selectedSlots.length > 0 && <span className="slot-count">({selectedSlots.length} selected)</span>}
+            </div>
+            {slotsLoading ? (
+              <div className="slot-picker-loading"><div className="spinner" /> Checking availability...</div>
+            ) : (
+              <>
+                <div className="slot-options">
+                  {seatSlots.map((slot) => {
+                    const isSelected = selectedSlots.some((s) => s.id === slot.id);
+                    const isBooked = slot.status !== "available";
+                    return (
+                      <button
+                        key={slot.id}
+                        type="button"
+                        className={`slot-option${isSelected ? " selected" : ""}${isBooked ? " unavailable" : ""}`}
+                        disabled={isBooked}
+                        onClick={() => toggleSlot(slot)}
+                        title={isBooked ? "Already booked for this seat" : slot.name}
+                      >
+                        <span className="slot-name">{slot.name}</span>
+                        <span className="slot-status">
+                          {isBooked ? "Booked" : isSelected ? "Selected" : "Available"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {seatSlots.length > 0 && seatSlots.every((s) => s.status !== "available") && (
+                  <div className="slot-empty">No slots are available for this seat right now. Please pick another seat.</div>
+                )}
+              </>
+            )}
+            {quote !== null && (
+              <div className="slot-quote">
+                <span>Total Amount</span>
+                <strong>{quoting ? "Calculating\u2026" : `\u20B9${quote}`}</strong>
+              </div>
+            )}
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={handleContinue}
+            disabled={slotsLoading || quoting || !selectedSlots.length}
+          >
+            {selectedSlots.length ? "Continue to Payment \u2192" : "Select a slot to continue"}
           </button>
         </div>
       )}

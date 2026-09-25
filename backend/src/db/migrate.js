@@ -408,6 +408,50 @@ async function migrate() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_password_setup_otps_user ON password_setup_otps(user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_password_setup_otps_expires ON password_setup_otps(expires_at)`,
+    // --- Slot booking + admin-controlled dynamic pricing ---
+    // Four fixed access/booking slots (NOT memberships). Prices live in the DB
+    // so admin can change them without any frontend/code change.
+    `CREATE TABLE IF NOT EXISTS slots (
+      id SERIAL PRIMARY KEY,
+      slot_number INTEGER UNIQUE NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      start_minute INTEGER NOT NULL,
+      end_minute INTEGER NOT NULL,
+      price INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`,
+    // Explicit combination prices: when a combo is configured it MUST win over
+    // summing the individual slot prices (e.g. 1+2 = 1100, not 500+1000).
+    `CREATE TABLE IF NOT EXISTS slot_combo_prices (
+      id SERIAL PRIMARY KEY,
+      slots_key VARCHAR(50) UNIQUE NOT NULL,
+      price INTEGER NOT NULL,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`,
+    // Booking -> selected slots relationship (Booking -> Seat -> Room -> Slot -> Payment)
+    `CREATE TABLE IF NOT EXISTS booking_slots (
+      booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
+      slot_id INTEGER REFERENCES slots(id) ON DELETE CASCADE,
+      PRIMARY KEY (booking_id, slot_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_booking_slots_slot ON booking_slots(slot_id)`,
+    // Seed only when missing — ON CONFLICT DO NOTHING preserves admin-set prices.
+    `INSERT INTO slots (slot_number, name, start_minute, end_minute, price) VALUES
+      (1, '5:00 AM - 10:00 AM', 300, 600, 500),
+      (2, '10:00 AM - 6:30 PM', 600, 1110, 1000),
+      (3, '7:00 PM - 12:00 AM', 1140, 1440, 500),
+      (4, '12:00 AM - 5:00 AM', 0, 300, 500)
+      ON CONFLICT (slot_number) DO NOTHING`,
+    `INSERT INTO slot_combo_prices (slots_key, price) VALUES
+      ('1+2', 1100),
+      ('2+3', 1100),
+      ('1+2+3', 1200),
+      ('1+2+3+4', 1500),
+      ('1+3', 800),
+      ('3+4', 800)
+      ON CONFLICT (slots_key) DO NOTHING`,
     // Performance indexes for hot query paths
     `CREATE INDEX IF NOT EXISTS idx_bookings_user_status ON bookings(user_id, status)`,
     `CREATE INDEX IF NOT EXISTS idx_bookings_seat_status ON bookings(seat_id, status)`,

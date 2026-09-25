@@ -29,6 +29,13 @@ import {
   getHelpRequests,
   updateHelpRequest,
 } from "../controllers/adminController.js";
+import {
+  getSeatSlots,
+  quoteSlotPrice,
+  getSlotPricing,
+  updateSlot,
+  updateSlotCombo,
+} from "../controllers/slotController.js";
 
 const router = Router();
 
@@ -60,5 +67,11 @@ router.get("/help", getHelpRequests);
 router.put("/help/:id", updateHelpRequest);
 router.get("/reports", getReports);
 router.post("/renew-membership", renewMembership);
+// Slot booking + admin-controlled dynamic pricing (admin-only via router.use above)
+router.get("/slots", getSlotPricing);
+router.put("/slots/:id", updateSlot);
+router.put("/slot-combos/:id", updateSlotCombo);
+router.post("/slots/quote", quoteSlotPrice);
+router.get("/seats/:id/slots", getSeatSlots);
 
 export default router;

@@ -4,7 +4,7 @@ import { useNavigate, useLocation, Link } from "react-router-dom";
 function Confirmation() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { plan, seat, utrNumber, timestamp } = location.state || {};
+  const { plan, seat, slots = [], amount, utrNumber, timestamp } = location.state || {};
 
   useEffect(() => {
     if (!plan || !seat) { navigate("/student/membership"); }
@@ -52,9 +52,13 @@ function Confirmation() {
             <span className="confirmation-value">{plan.name}</span>
           </div>
           <div className="confirmation-row">
-            <span className="confirmation-label">Timing</span>
+            <span className="confirmation-label">{slots.length ? "Access Slots" : "Timing"}</span>
             <span className="confirmation-value">
-              {plan.is_24_hour ? "24 Hours Access" : `${formatTime(plan.start_minute)} \u2013 ${formatTime(plan.end_minute)}`}
+              {slots.length
+                ? slots.map((s) => s.name).join(", ")
+                : plan.is_24_hour
+                  ? "24 Hours Access"
+                  : `${formatTime(plan.start_minute)} \u2013 ${formatTime(plan.end_minute)}`}
             </span>
           </div>
           <div className="confirmation-row">
@@ -67,7 +71,7 @@ function Confirmation() {
           </div>
           <div className="confirmation-row">
             <span className="confirmation-label">Amount</span>
-            <span className="confirmation-value amount">&#8377;{plan.price}</span>
+            <span className="confirmation-value amount">&#8377;{amount ?? plan.price}</span>
           </div>
           <div className="confirmation-row">
             <span className="confirmation-label">UTR / Reference</span>

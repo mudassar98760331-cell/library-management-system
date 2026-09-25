@@ -17,6 +17,7 @@ const adminLinks = [
   { to: "/admin/dashboard", label: "Dashboard", icon: "\u{1F4CA}" },
   { to: "/admin/students", label: "Students", icon: "\u{1F465}" },
   { to: "/admin/seats", label: "Seats", icon: "\u{1F4BA}" },
+  { to: "/admin/pricing", label: "Slot Pricing", icon: "\u{1F4B0}" },
   { to: "/admin/memberships", label: "Memberships", icon: "\u{1F4CB}" },
   { to: "/admin/payments", label: "Payments", icon: "\u{1F4B3}" },
   { to: "/admin/lost-found", label: "Lost & Found", icon: "\u{1F50E}" },

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
+import { quoteSlots, getSeatSlotAvailability } from "../services/pricing.js";
 
 // Strict YYYY-MM-DD calendar-date validation (rejects e.g. 2026-02-30 or 2026-13-01).
 function isValidDateString(value) {
@@ -456,15 +457,24 @@ export async function createOfflineBooking(req, res) {
       start_date,
       end_date,
       notes,
+      slot_ids,
     } = req.body;
 
-    if (!seat_id || !fee_plan_id || !amount || !payment_method) {
-      return res.status(400).json({ error: "seat_id, fee_plan_id, amount, and payment_method are required" });
+    const wantsSlots =
+      slot_ids !== undefined && slot_ids !== null && slot_ids !== "";
+
+    if (!seat_id || !fee_plan_id || !payment_method || (!wantsSlots && !amount)) {
+      return res.status(400).json({ error: "seat_id, fee_plan_id, amount (or slot_ids), and payment_method are required" });
     }
 
-    const amountNum = Number(amount);
-    if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      return res.status(400).json({ error: "amount must be a positive number" });
+    // With slot selection the amount is always system-calculated; the legacy
+    // manual amount path is kept for plan-only offline bookings.
+    let amountNum = null;
+    if (!wantsSlots) {
+      amountNum = Number(amount);
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ error: "amount must be a positive number" });
+      }
     }
 
     const allowedMethods = new Set(["cash", "upi", "other"]);
@@ -569,6 +579,31 @@ export async function createOfflineBooking(req, res) {
       return res.status(400).json({ error: "Seat is disabled" });
     }
 
+    // Slot-based offline booking: validate the selection and calculate the
+    // amount from the CURRENT admin-configured pricing (never client-supplied).
+    let selectedSlots = null;
+    if (wantsSlots) {
+      const quoted = await quoteSlots(slot_ids, client);
+      if (!quoted.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: quoted.error });
+      }
+      selectedSlots = quoted.slots;
+      amountNum = quoted.price;
+
+      const availability = await getSeatSlotAvailability(client, Number(seat_id));
+      const bookedIds = new Set(
+        availability.filter((s) => s.status === "booked").map((s) => s.id)
+      );
+      const conflictSlot = selectedSlots.find((s) => bookedIds.has(s.id));
+      if (conflictSlot) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Selected slot is already booked for this seat: ${conflictSlot.name}`,
+        });
+      }
+    }
+
     const { rows: activeSeatBookings } = await client.query(
       `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
        FROM bookings b
@@ -582,7 +617,7 @@ export async function createOfflineBooking(req, res) {
       return res.status(400).json({ error: "Seat is full" });
     }
 
-    if (activeSeatBookings.length === 1) {
+    if (activeSeatBookings.length === 1 && !selectedSlots) {
       const existing = activeSeatBookings[0];
       const hasOverlap =
         existing.is_24_hour ||
@@ -610,6 +645,16 @@ export async function createOfflineBooking(req, res) {
       [student.id, seat_id, fee_plan_id, membershipStart, membershipEnd]
     );
 
+    // Booking -> Slot relationship for slot-based offline bookings
+    if (selectedSlots) {
+      for (const slot of selectedSlots) {
+        await client.query(
+          "INSERT INTO booking_slots (booking_id, slot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [bookingRows[0].id, slot.id]
+        );
+      }
+    }
+
     await client.query(
       "UPDATE seats SET status = 'booked' WHERE id = $1 AND status = 'available'",
       [seat_id]
@@ -622,7 +667,7 @@ export async function createOfflineBooking(req, res) {
       [
         student.id,
         membershipRows[0].id,
-        amount,
+        amountNum,
         payment_method,
         paymentType,
         payment_date || new Date(),
@@ -630,7 +675,7 @@ export async function createOfflineBooking(req, res) {
         req.user.id,
         notes || "",
         payment_method,
-        amount,
+        amountNum,
       ]
     );
 
@@ -645,7 +690,7 @@ export async function createOfflineBooking(req, res) {
       [
         student.id,
         "Offline Booking Created",
-        `Offline booking created. Seat: ${seatInfoRow.seat_number || seatRows[0].seat_number}, Room: ${seatInfoRow.room_name || "N/A"}. Plan: ${feePlan.name}. Valid: ${new Date(membershipStart).toLocaleDateString("en-IN")} to ${new Date(membershipEnd).toLocaleDateString("en-IN")}.`,
+        `Offline booking created. Seat: ${seatInfoRow.seat_number || seatRows[0].seat_number}, Room: ${seatInfoRow.room_name || "N/A"}. Plan: ${feePlan.name}.${selectedSlots ? ` Slots: ${selectedSlots.map((s) => s.name).join(", ")}.` : ""} Valid: ${new Date(membershipStart).toLocaleDateString("en-IN")} to ${new Date(membershipEnd).toLocaleDateString("en-IN")}.`,
       ]
     );
 

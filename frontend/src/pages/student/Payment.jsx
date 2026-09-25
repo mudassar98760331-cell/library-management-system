@@ -9,6 +9,8 @@ function Payment() {
   const location = useLocation();
   const plan = location.state?.plan;
   const seat = location.state?.seat;
+  const slots = location.state?.slots || [];
+  const amount = location.state?.quote ?? plan?.price;
 
   const [settings, setSettings] = useState(null);
   const [utrNumber, setUtrNumber] = useState("");
@@ -19,6 +21,7 @@ function Payment() {
 
   useEffect(() => {
     if (!plan || !seat) { navigate("/student/membership"); return; }
+    if (!slots.length) { navigate("/student/seat-booking", { state: { plan } }); return; }
     fetch("/api/settings")
       .then((r) => (r.ok ? r.text() : ""))
       .then((t) => {
@@ -28,13 +31,6 @@ function Payment() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const formatTime = (m) => {
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
-    const ap = h >= 12 ? "PM" : "AM";
-    return `${h % 12 || 12}:${String(mm).padStart(2, "0")} ${ap}`;
-  };
 
   const handleScreenshot = (e) => {
     const file = e.target.files[0];
@@ -56,6 +52,7 @@ function Payment() {
       await studentAPI.submitPayment({
         fee_plan_id: plan.id,
         seat_id: seat.id,
+        slot_ids: slots.map((s) => s.id),
         utr_number: utrNumber.trim(),
         screenshot,
       });
@@ -64,6 +61,8 @@ function Payment() {
         state: {
           plan,
           seat,
+          slots,
+          amount,
           utrNumber,
           paymentSubmitted: true,
           timestamp: new Date().toISOString(),
@@ -110,10 +109,8 @@ function Payment() {
             <span className="summary-value">{plan?.name}</span>
           </div>
           <div className="payment-summary-item">
-            <span className="summary-label">Timing</span>
-            <span className="summary-value">
-              {plan?.is_24_hour ? "24 Hours Access" : `${formatTime(plan?.start_minute)} \u2013 ${formatTime(plan?.end_minute)}`}
-            </span>
+            <span className="summary-label">Access Slots</span>
+            <span className="summary-value">{slots.map((s) => s.name).join(", ")}</span>
           </div>
           <div className="payment-summary-item">
             <span className="summary-label">Seat</span>
@@ -121,7 +118,7 @@ function Payment() {
           </div>
           <div className="payment-summary-item">
             <span className="summary-label">Amount</span>
-            <span className="summary-value amount">&#8377;{plan?.price}</span>
+            <span className="summary-value amount">&#8377;{amount}</span>
           </div>
         </div>
       </div>

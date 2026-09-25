@@ -22,6 +22,7 @@ import {
   submitHelpRequest,
   getMyHelpRequests,
 } from "../controllers/studentController.js";
+import { getSeatSlots, quoteSlotPrice } from "../controllers/slotController.js";
 
 const router = Router();
 
@@ -32,6 +33,8 @@ router.get("/fee-plans", getFeePlans);
 router.post("/membership", purchaseMembership);
 router.post("/payment", uploadScreenshot, submitPayment);
 router.get("/seats", getSeats);
+router.get("/seats/:id/slots", getSeatSlots);
+router.post("/slots/quote", quoteSlotPrice);
 router.post("/book-seat", bookSeat);
 router.delete("/booking/:booking_id", cancelBooking);
 router.get("/payment-history", getPaymentHistory);

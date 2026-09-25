@@ -1,5 +1,6 @@
 import pool from "../config/db.js";
 import bcrypt from "bcryptjs";
+import { quoteSlots, getSeatSlotAvailability } from "../services/pricing.js";
 
 export async function getDashboard(req, res) {
   try {
@@ -203,6 +204,37 @@ export async function submitPayment(req, res) {
       return res.status(400).json({ error: "Seat is disabled" });
     }
 
+    // --- Slot booking (new flow): validate selection and calculate the FINAL
+    // price on the server. The client never sends an amount for slot bookings.
+    const rawSlotIds = req.body.slot_ids;
+    const wantsSlots =
+      rawSlotIds !== undefined && rawSlotIds !== null && rawSlotIds !== "";
+    let selectedSlots = null;
+    let amount = feePlan.price;
+    if (wantsSlots) {
+      const quoted = await quoteSlots(rawSlotIds, client);
+      if (!quoted.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: quoted.error });
+      }
+      selectedSlots = quoted.slots;
+      amount = quoted.price;
+
+      // Each selected slot must still be free on THIS seat (per-slot, so one
+      // booked slot never blocks the others).
+      const availability = await getSeatSlotAvailability(client, Number(seat_id));
+      const bookedIds = new Set(
+        availability.filter((s) => s.status === "booked").map((s) => s.id)
+      );
+      const conflictSlot = selectedSlots.find((s) => bookedIds.has(s.id));
+      if (conflictSlot) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Selected slot is already booked for this seat: ${conflictSlot.name}`,
+        });
+      }
+    }
+
     const { rows: activeSeatBookings } = await client.query(
       `SELECT b.*, fp.start_minute, fp.end_minute, fp.is_24_hour
        FROM bookings b
@@ -216,7 +248,9 @@ export async function submitPayment(req, res) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Seat is full" });
     }
-    if (activeSeatBookings.length === 1) {
+    // Slot bookings are already validated slot-by-slot above; only legacy
+    // plan-based bookings still use the fee-plan timing overlap check.
+    if (activeSeatBookings.length === 1 && !selectedSlots) {
       const existing = activeSeatBookings[0];
       const hasOverlap =
         existing.is_24_hour ||
@@ -245,7 +279,7 @@ export async function submitPayment(req, res) {
        VALUES ($1, $2, $3, 'upi', 'pending', 'online', $4, $5, $6)
        RETURNING id, user_id, membership_id, amount, method, payment_type, utr_number,
                  status, admin_note, payment_date, payment_mode, amount_paid, created_at`,
-      [userId, membership.id, feePlan.price, utr, req.file.buffer, req.file.mimetype]
+      [userId, membership.id, amount, utr, req.file.buffer, req.file.mimetype]
     );
     const payment = paymentRows[0];
 
@@ -254,6 +288,16 @@ export async function submitPayment(req, res) {
        VALUES ($1, $2, $3, $4, $5, 'pending', 'online') RETURNING *`,
       [userId, seat_id, fee_plan_id, membership.start_date, membership.end_date]
     );
+
+    // Remember exactly which slots this booking occupies (Booking -> Slot link)
+    if (selectedSlots) {
+      for (const slot of selectedSlots) {
+        await client.query(
+          "INSERT INTO booking_slots (booking_id, slot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [bookingRows[0].id, slot.id]
+        );
+      }
+    }
 
     // Hold the seat while payment is awaiting verification
     if (seat.status !== "booked") {
@@ -266,6 +310,8 @@ export async function submitPayment(req, res) {
       membership,
       payment,
       booking: bookingRows[0],
+      slots: selectedSlots || [],
+      amount: payment.amount,
       message: "Payment submitted. Waiting for admin approval.",
     });
   } catch (err) {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { adminAPI } from "../../services/api";
 import { useToast } from "../../context/useToast";
 
@@ -19,6 +19,11 @@ function Seats() {
   const [offlineModal, setOfflineModal] = useState(null);
   const [feePlans, setFeePlans] = useState([]);
   const [submittingOffline, setSubmittingOffline] = useState(false);
+  const [offlineSlots, setOfflineSlots] = useState([]);
+  const [offlineSlotIds, setOfflineSlotIds] = useState([]);
+  const [offlineQuote, setOfflineQuote] = useState(null);
+  const [offlineQuoting, setOfflineQuoting] = useState(false);
+  const offlineQuoteReqRef = useRef(0);
   const [offlineForm, setOfflineForm] = useState({
     student_name: "",
     phone: "",
@@ -65,6 +70,37 @@ function Seats() {
     } catch (err) { toast.error(err.message); }
   };
 
+  // Slot pricing always comes from the backend quote — the amount field becomes
+  // read-only whenever slots are selected. The request id guard ensures a stale
+  // response never overwrites a newer selection's price.
+  const requestOfflineQuote = (ids) => {
+    const reqId = ++offlineQuoteReqRef.current;
+    if (!ids.length) {
+      setOfflineQuote(null);
+      setOfflineQuoting(false);
+      return;
+    }
+    setOfflineQuoting(true);
+    adminAPI.quoteSlots(ids)
+      .then((d) => { if (reqId === offlineQuoteReqRef.current) setOfflineQuote(d.price); })
+      .catch(() => {
+        if (reqId === offlineQuoteReqRef.current) {
+          setOfflineQuote(null);
+          toast.error("Could not calculate the price");
+        }
+      })
+      .finally(() => { if (reqId === offlineQuoteReqRef.current) setOfflineQuoting(false); });
+  };
+
+  const toggleOfflineSlot = (slot) => {
+    if (slot.status !== "available") return;
+    const next = offlineSlotIds.includes(slot.id)
+      ? offlineSlotIds.filter((id) => id !== slot.id)
+      : [...offlineSlotIds, slot.id].sort((a, b) => a - b);
+    setOfflineSlotIds(next);
+    requestOfflineQuote(next);
+  };
+
   const openOfflineModal = (seat) => {
     setOfflineForm({
       student_name: "",
@@ -79,19 +115,29 @@ function Seats() {
       end_date: "",
       notes: "",
     });
+    setOfflineSlots([]);
+    setOfflineSlotIds([]);
+    ++offlineQuoteReqRef.current;
+    setOfflineQuote(null);
+    setOfflineQuoting(false);
     setOfflineModal(seat);
+    adminAPI.getSeatSlots(seat.id)
+      .then((d) => setOfflineSlots(d.slots || []))
+      .catch(() => toast.error("Failed to load slot availability"));
   };
 
   const handleOfflineSubmit = async (e) => {
     e.preventDefault();
     setSubmittingOffline(true);
     try {
+      const hasSlots = offlineSlotIds.length > 0;
       const payload = {
         ...offlineForm,
         seat_id: Number(offlineForm.seat_id),
         fee_plan_id: Number(offlineForm.fee_plan_id),
-        amount: Number(offlineForm.amount),
+        amount: hasSlots ? offlineQuote : Number(offlineForm.amount),
       };
+      if (hasSlots) payload.slot_ids = offlineSlotIds;
       await adminAPI.createOfflineBooking(payload);
       toast.success("Offline booking created successfully!");
       setOfflineModal(null);
@@ -324,10 +370,49 @@ function Seats() {
                     </select>
                   </div>
                 </div>
+                <div className="form-group" style={{ marginTop: 4 }}>
+                  <label>Access Slots (optional — books only the selected timings)</label>
+                  <div className="slot-options">
+                    {offlineSlots.map((slot) => {
+                      const isSelected = offlineSlotIds.includes(slot.id);
+                      const isBooked = slot.status !== "available";
+                      return (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          className={`slot-option${isSelected ? " selected" : ""}${isBooked ? " unavailable" : ""}`}
+                          disabled={isBooked}
+                          onClick={() => toggleOfflineSlot(slot)}
+                          title={isBooked ? "Already booked for this seat" : slot.name}
+                        >
+                          <span className="slot-name">{slot.name}</span>
+                          <span className="slot-status">
+                            {isBooked ? "Booked" : isSelected ? "Selected" : "Available"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {offlineSlots.length === 0 && (
+                    <div className="slot-empty">Loading availability&hellip;</div>
+                  )}
+                </div>
                 <div className="form-row">
                   <div className="form-group">
                     <label>Amount Paid *</label>
-                    <input type="number" value={offlineForm.amount} onChange={(e) => setOfflineForm({ ...offlineForm, amount: e.target.value })} required />
+                    <input
+                      type="number"
+                      value={offlineSlotIds.length ? (offlineQuote ?? "") : offlineForm.amount}
+                      onChange={(e) => setOfflineForm({ ...offlineForm, amount: e.target.value })}
+                      readOnly={offlineSlotIds.length > 0}
+                      placeholder={offlineSlotIds.length ? "Calculated from slots" : ""}
+                      required
+                    />
+                    {offlineSlotIds.length > 0 && (
+                      <small style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                        {offlineQuoting ? "Calculating\u2026" : "Auto-calculated from the selected slots"}
+                      </small>
+                    )}
                   </div>
                   <div className="form-group">
                     <label>Payment Mode *</label>
@@ -353,7 +438,11 @@ function Seats() {
                   <textarea value={offlineForm.notes} onChange={(e) => setOfflineForm({ ...offlineForm, notes: e.target.value })} rows={3} placeholder="Optional notes..." />
                 </div>
                 <div style={{ marginTop: 12 }}>
-                  <button type="submit" className="btn btn-primary" disabled={submittingOffline}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={submittingOffline || (offlineSlotIds.length > 0 && (offlineQuoting || offlineQuote === null))}
+                  >
                     {submittingOffline ? "Creating..." : "Create Offline Booking"}
                   </button>
                   <button type="button" className="btn btn-secondary" onClick={() => setOfflineModal(null)} style={{ marginLeft: 8 }}>

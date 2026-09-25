@@ -75,36 +75,26 @@ function Home() {
 
       <section className="membership-section" id="membership">
         <div className="membership-section-left">
-          <div className="label" style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>Pricing</div>
-          <h2>Choose Your Timing Plan</h2>
-          <p>Find the perfect plan for your study schedule. All plans include access to our premium study environment.</p>
+          <div className="label" style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>Access Timings</div>
+          <h2>Choose Your Study Timing</h2>
+          <p>Four flexible access slots to match your schedule. Log in to check availability and book your slot.</p>
         </div>
         <div className="home-plans">
           <div className="plan">
-            <h3>5AM - 10AM</h3>
-            <div className="price">₹500<span>/month</span></div>
+            <h3>5:00 AM &ndash; 10:00 AM</h3>
             <p>Early morning session</p>
           </div>
           <div className="plan">
-            <h3>7PM - 12AM</h3>
-            <div className="price">₹500<span>/month</span></div>
+            <h3>10:00 AM &ndash; 6:30 PM</h3>
+            <p>Full day session</p>
+          </div>
+          <div className="plan">
+            <h3>7:00 PM &ndash; 12:00 AM</h3>
             <p>Late evening session</p>
           </div>
           <div className="plan">
-            <h3>10AM - 6:30PM</h3>
-            <div className="price">₹1000<span>/month</span></div>
-            <p>Full day session</p>
-          </div>
-          <div className="plan popular">
-            <span className="popular-label">Popular</span>
-            <h3>7AM - 11PM</h3>
-            <div className="price">₹1200<span>/month</span></div>
-            <p>Extended day access</p>
-          </div>
-          <div className="plan">
-            <h3>24 Hours</h3>
-            <div className="price">₹1500<span>/month</span></div>
-            <p>Full day & night</p>
+            <h3>12:00 AM &ndash; 5:00 AM</h3>
+            <p>Night session</p>
           </div>
         </div>
       </section>
