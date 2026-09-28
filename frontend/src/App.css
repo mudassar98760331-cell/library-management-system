@@ -1978,6 +1978,133 @@ tr:hover td {
   font-size: 15px;
 }
 
+/* ===== ABOUT / WHY US / LOCATION (home page) ===== */
+
+.about-section {
+  padding: 64px 7%;
+}
+
+.about-content {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.about-content p {
+  font-size: 15px;
+  line-height: 1.75;
+  margin-bottom: 14px;
+}
+
+.about-content p:last-child {
+  margin-bottom: 0;
+}
+
+.why-section {
+  padding: 64px 7%;
+  background: rgba(59, 130, 246, 0.02);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.why-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.why-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: all 0.2s;
+}
+
+.why-item:hover {
+  border-color: var(--accent-border);
+  transform: translateY(-2px);
+}
+
+.why-check {
+  color: var(--success);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.why-item h3 {
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+
+.why-item p {
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.location-section {
+  padding: 64px 7% 72px;
+}
+
+.location-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.location-card {
+  padding: 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  transition: border-color 0.2s;
+}
+
+.location-card:hover {
+  border-color: var(--accent-border);
+}
+
+.location-icon {
+  display: block;
+  font-size: 26px;
+  margin-bottom: 10px;
+}
+
+.location-card h3 {
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
+.location-card p {
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.location-card p:last-child {
+  margin-bottom: 0;
+}
+
+.location-card .location-note {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.location-card a {
+  color: var(--accent);
+}
+
 /* ===== FOOTER ===== */
 .footer {
   padding: 40px 7% 24px;
@@ -2208,6 +2335,11 @@ tr:hover td {
     grid-template-columns: 1fr 1fr;
     gap: 28px;
   }
+
+  .location-grid {
+    grid-template-columns: 1fr;
+    max-width: 560px;
+  }
 }
 
 /* ===== RESPONSIVE: MOBILE LANDSCAPE / SMALL TABLET (max-width: 768px) ===== */
@@ -2295,6 +2427,17 @@ tr:hover td {
 
   .section-heading {
     max-width: none;
+  }
+
+  .about-section,
+  .why-section,
+  .location-section {
+    padding: 48px 20px;
+  }
+
+  .why-grid {
+    grid-template-columns: 1fr;
+    max-width: 560px;
   }
 
   .membership-section {
@@ -2521,6 +2664,9 @@ tr:hover td {
   /* Sections */
   .features-section,
   .membership-section,
+  .about-section,
+  .why-section,
+  .location-section,
   .cta-section {
     padding: 32px 16px;
   }
